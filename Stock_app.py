@@ -2025,6 +2025,102 @@ def render_backtest():
         
         st.caption("⚠️ 回测结果基于历史数据，不代表未来表现")
 
+# ==================== 模块5：实操信号 ====================
+
+def render_live_signals():
+    """实操信号模块（半自动交易）"""
+    st.markdown(f"### {t()['module5_title']}")
+    
+    last_update = get_last_update_time("live_signals")
+    st.caption(f"📅 最后更新: {last_update} | 💡 AI生成交易信号，请自行前往券商App下单")
+    
+    col1, col2 = st.columns([4, 1])
+    with col2:
+        if st.button(t()["refresh"], key="refresh_signals", use_container_width=True):
+            if not consume_free_trial(st.session_state.user_id):
+                st.warning("免费次数已用完，请升级到专业版")
+            else:
+                update_last_update_time("live_signals")
+                st.rerun()
+    
+    # 获取推荐池数据（高评分股票生成信号）
+    recommended_stocks = get_recommended_pool(st.session_state.user_id)
+    live_stocks = get_live_pool(st.session_state.user_id)
+    
+    # 生成交易信号
+    signals = []
+    
+    # 从推荐池获取高评分股票
+    for stock in recommended_stocks[:5]:
+        score = stock.get('current_score', 0)
+        if score >= 70:
+            signals.append({
+                "stock_code": stock['stock_code'],
+                "stock_name": stock.get('stock_name', ''),
+                "score": score,
+                "action": "买入",
+                "suggested_position": "5-15%",
+                "confidence": f"{score:.0f}%"
+            })
+    
+    # 从实操池获取持仓信号
+    for stock in live_stocks:
+        current_price = stock.get('current_price', 0)
+        avg_cost = stock.get('avg_cost', 0)
+        if avg_cost > 0 and current_price > 0:
+            profit_pct = (current_price - avg_cost) / avg_cost * 100
+            if profit_pct > 10:
+                action = "卖出(获利)"
+            elif profit_pct < -8:
+                action = "止损⚠️"
+            else:
+                action = "持有"
+        else:
+            action = "持有"
+        
+        signals.append({
+            "stock_code": stock['stock_code'],
+            "stock_name": stock.get('stock_name', ''),
+            "action": action,
+            "suggested_position": f"{stock.get('shares', 0)}股",
+            "confidence": ""
+        })
+    
+    if not signals:
+        st.info("暂无交易信号，请先在推荐池添加高评分股票")
+        return
+    
+    # 显示信号表格
+    signals_df = pd.DataFrame(signals)
+    st.dataframe(
+        signals_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "stock_code": "股票代码",
+            "stock_name": "股票名称",
+            "action": "操作建议",
+            "suggested_position": "建议/仓位",
+            "confidence": "置信度"
+        }
+    )
+    
+    # 升级提示
+    profile = get_user_profile(st.session_state.user_id)
+    if profile.get("subscription_tier") == "free":
+        remaining = get_remaining_trials(st.session_state.user_id)
+        st.info(f"📋 免费用户每次刷新消耗1次，剩余{remaining}次。升级专业版后无限使用。")
+    
+    st.markdown("---")
+    st.markdown("### 📖 操作指引")
+    st.markdown("""
+    1. 查看上方交易信号
+    2. 打开您的券商App（如招商证券、富途牛牛）
+    3. 根据信号手动下单
+    4. 可在实操池中记录持仓
+    
+    ⚠️ 投资有风险，请谨慎决策
+    """)
 # ============================================================
 # 第5部分：主入口 + 侧边栏 + 顶部按钮 + 页面路由
 # 修复：所有股票池操作函数调用时传入 access_token
