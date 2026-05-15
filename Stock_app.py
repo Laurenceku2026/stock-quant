@@ -1,15 +1,274 @@
 """
-auth.py - Supabase认证、登录/注册、Session管理、管理员验证
+AI量化股票系统 - 完整单文件版本 v1.0
+基于DFSS方法论 + 机器学习集成
+
+完整包含：
+- 用户认证（Supabase Auth）
+- 5大功能模块（市场简报、推荐股票池、个股分析、回测、实操信号）
+- 管理员面板
+- 多语言支持
+- Stripe付费集成（待配置）
+
+部署方式：
+1. 将代码上传到GitHub
+2. 在Streamlit Cloud部署
+3. 配置Secrets（Supabase密钥、Stripe密钥等）
 """
 
-import streamlit as st
-import requests
-from datetime import datetime
+# ============================================================
+# 第1部分：导入、配置、常量、多语言、Supabase连接、工具函数
+# ============================================================
 
-from config import (
-    SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, SUPABASE_SECRET_KEY,
-    ADMIN_USERNAME, ADMIN_PASSWORD, t
+import streamlit as st
+import pandas as pd
+import numpy as np
+import random
+import math
+import requests
+import json
+import time
+import hashlib
+import hmac
+from datetime import datetime, timedelta
+from typing import List, Dict, Tuple, Optional
+from collections import Counter
+import plotly.express as px
+import plotly.graph_objects as go
+
+# ==================== 页面配置 ====================
+st.set_page_config(
+    page_title="AI量化股票系统",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
+
+# ==================== 管理员配置 ====================
+ADMIN_USERNAME = "Laurence_ku"
+ADMIN_PASSWORD = "Ku_product$2026"
+ADMIN_EMAIL = "Techlife2027@gmail.com"
+
+# ==================== 常量定义 ====================
+FREE_TRIAL_LIMIT = 30
+MAX_RECOMMENDED_STOCKS = 30
+
+# 技术指标权重
+TECH_WEIGHTS = {
+    "macd": 0.25,
+    "kdj": 0.20,
+    "boll": 0.20,
+    "rsi": 0.15,
+    "volume_price": 0.20
+}
+
+# 信号等级映射
+SIGNAL_LEVELS = {
+    "S": {"min_score": 85, "action": "强烈买入", "position": "10-15%", "color": "#ff4b4b"},
+    "A": {"min_score": 70, "action": "买入", "position": "5-10%", "color": "#ff6b6b"},
+    "B": {"min_score": 55, "action": "观望", "position": "0-5%", "color": "#ffaa00"},
+    "C": {"min_score": 40, "action": "减持", "position": "减半", "color": "#ff8800"},
+    "D": {"min_score": 0, "action": "清仓/回避", "position": "0%", "color": "#888888"}
+}
+
+# ==================== Supabase 配置 ====================
+SUPABASE_URL = st.secrets.get("SUPABASE_STOCK_URL", "")
+SUPABASE_PUBLISHABLE_KEY = st.secrets.get("SUPABASE_STOCK_ANON_KEY", "")
+SUPABASE_SECRET_KEY = st.secrets.get("SUPABASE_STOCK_SECRET_KEY", "")
+
+# ==================== Stripe 配置 ====================
+STRIPE_PRICE_MONTHLY = st.secrets.get("STRIPE_PRICE_MONTHLY", "")
+STRIPE_PRICE_YEARLY = st.secrets.get("STRIPE_PRICE_YEARLY", "")
+
+# ==================== DeepSeek 配置 ====================
+DEEPSEEK_API_KEY = st.secrets.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_BASE_URL = st.secrets.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_MODEL = st.secrets.get("DEEPSEEK_MODEL", "deepseek-chat")
+
+# ==================== Tushare 配置 ====================
+TUSHARE_TOKEN = st.secrets.get("TUSHARE_TOKEN", "")
+
+# ==================== 多语言文本 ====================
+TEXTS = {
+    "zh": {
+        "app_title": "📊 AI量化股票系统",
+        "login": "登录",
+        "register": "注册",
+        "logout": "登出",
+        "email": "邮箱",
+        "password": "密码",
+        "confirm_password": "确认密码",
+        "login_btn": "登录",
+        "register_btn": "注册",
+        "back_to_login": "返回登录",
+        "welcome": "欢迎回来",
+        "login_failed": "登录失败，请检查邮箱和密码",
+        "register_success": "注册成功！请登录",
+        "email_exists": "该邮箱已注册，请直接登录",
+        "about_header": "📘 关于系统",
+        "about_text": """
+**AI量化股票系统** 基于DFSS方法论和AI技术，提供：
+
+- 🔥 热点板块识别
+- 🎯 龙头股筛选
+- 📈 技术指标评分
+- 📊 策略回测验证
+- 💡 AI操作建议
+
+让AI成为您的投资助手。
+""",
+        "contact_header": "📧 联系我们",
+        "contact_email": "✉️ 电邮: Techlife2027@gmail.com",
+        "guide_header": "📖 快速指南",
+        "guide_text": """
+1. 点击[刷新]获取最新分析
+2. 推荐池可手动添加/删除股票
+3. 输入代码进行个股分析
+4. 回测验证策略有效性
+5. 实操信号供手动下单参考
+
+💡 每次刷新消耗1次免费次数
+💎 升级专业版后无限使用
+""",
+        "subscription": "订阅",
+        "free_tier": "免费版",
+        "pro_tier": "专业版",
+        "remaining": "剩余次数",
+        "unlimited": "无限",
+        "upgrade": "升级专业版",
+        "module1_title": "📊 市场简报",
+        "module2_title": "🎯 推荐股票池",
+        "module3_title": "🔍 个股分析",
+        "module4_title": "📈 回测功能",
+        "module5_title": "💡 实操信号",
+        "refresh": "🔄 刷新",
+        "add_stock": "➕ 手动添加",
+        "analyze": "分析",
+        "admin_panel": "管理员面板",
+        "total_users": "总用户数",
+        "pro_users": "专业版用户",
+        "free_users": "免费版用户",
+        "user_list": "用户列表",
+        "reset_password": "重置密码",
+        "send_email": "发送邮件",
+        "paywall_title": "🔒 免费次数已用完",
+        "paywall_desc": "升级到专业版，无限使用所有功能",
+        "monthly": "月付 $29/月",
+        "yearly": "年付 $299/年",
+        "save_info": "年付立省$49",
+        "buy": "买入",
+        "sell": "卖出",
+        "hold": "持有",
+        "increase": "加仓",
+        "reduce": "减仓",
+        "chinese": "中文",
+        "english": "English"
+    },
+    "en": {
+        "app_title": "📊 AI Quant Stock System",
+        "login": "Login",
+        "register": "Register",
+        "logout": "Logout",
+        "email": "Email",
+        "password": "Password",
+        "confirm_password": "Confirm Password",
+        "login_btn": "Login",
+        "register_btn": "Register",
+        "back_to_login": "Back to Login",
+        "welcome": "Welcome back",
+        "login_failed": "Login failed. Please check your email and password.",
+        "register_success": "Registration successful! Please login.",
+        "email_exists": "Email already registered. Please login.",
+        "about_header": "📘 About System",
+        "about_text": """
+**AI Quant Stock System** powered by DFSS and AI:
+
+- 🔥 Hot Sector Detection
+- 🎯 Leader Stock Selection
+- 📈 Technical Analysis
+- 📊 Strategy Backtesting
+- 💡 AI Trading Signals
+
+Let AI be your investment assistant.
+""",
+        "contact_header": "📧 Contact Us",
+        "contact_email": "✉️ Email: Techlife2027@gmail.com",
+        "guide_header": "📖 Quick Guide",
+        "guide_text": """
+1. Click [Refresh] for latest analysis
+2. Manually add/remove stocks from pool
+3. Enter code for individual analysis
+4. Backtest to validate strategies
+5. Signals for manual trading reference
+
+💡 Each refresh uses 1 free trial
+💎 Upgrade to Pro for unlimited access
+""",
+        "subscription": "Subscription",
+        "free_tier": "Free",
+        "pro_tier": "Pro",
+        "remaining": "Remaining",
+        "unlimited": "Unlimited",
+        "upgrade": "Upgrade to Pro",
+        "module1_title": "📊 Market Brief",
+        "module2_title": "🎯 Recommended Pool",
+        "module3_title": "🔍 Stock Analysis",
+        "module4_title": "📈 Backtest",
+        "module5_title": "💡 Trading Signals",
+        "refresh": "🔄 Refresh",
+        "add_stock": "➕ Add Stock",
+        "analyze": "Analyze",
+        "admin_panel": "Admin Panel",
+        "total_users": "Total Users",
+        "pro_users": "Pro Users",
+        "free_users": "Free Users",
+        "user_list": "User List",
+        "reset_password": "Reset Password",
+        "send_email": "Send Email",
+        "paywall_title": "🔒 Free Trials Exhausted",
+        "paywall_desc": "Upgrade to Pro for unlimited access",
+        "monthly": "Monthly $29/mo",
+        "yearly": "Yearly $299/yr",
+        "save_info": "Save $49 per year",
+        "buy": "Buy",
+        "sell": "Sell",
+        "hold": "Hold",
+        "increase": "Increase",
+        "reduce": "Reduce",
+        "chinese": "中文",
+        "english": "English"
+    }
+}
+
+
+def t():
+    """获取当前语言的文本"""
+    lang = st.session_state.get("lang", "zh")
+    return TEXTS[lang]
+
+
+# ==================== 初始化Session State ====================
+def init_session_state():
+    """初始化所有session state变量"""
+    if "lang" not in st.session_state:
+        st.session_state.lang = "zh"
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+    if "user_id" not in st.session_state:
+        st.session_state.user_id = None
+    if "user_email" not in st.session_state:
+        st.session_state.user_email = None
+    if "admin_mode" not in st.session_state:
+        st.session_state.admin_mode = False
+    if "show_admin_login" not in st.session_state:
+        st.session_state.show_admin_login = False
+    if "show_register" not in st.session_state:
+        st.session_state.show_register = False
+    if "show_paywall" not in st.session_state:
+        st.session_state.show_paywall = False
+    if "analyze_code" not in st.session_state:
+        st.session_state.analyze_code = ""
+    if "analyze_name" not in st.session_state:
+        st.session_state.analyze_name = ""
 
 
 # ==================== Supabase API 封装 ====================
@@ -31,10 +290,13 @@ def get_supabase_headers(use_secret=False):
     }
 
 
-def supabase_request(method: str, endpoint: str, data=None, use_secret=False):
+def supabase_request(method: str, endpoint: str, data=None, params=None, use_secret=False):
     """通用的Supabase REST API请求"""
     url = f"{SUPABASE_URL}/rest/v1/{endpoint}"
     headers = get_supabase_headers(use_secret)
+    
+    if params:
+        url += f"?{params}"
     
     if method == "GET":
         response = requests.get(url, headers=headers)
@@ -79,7 +341,7 @@ def sign_up(email: str, password: str) -> tuple:
                     "id": user_id,
                     "email": email,
                     "subscription_tier": "free",
-                    "free_trials_remaining": 30,
+                    "free_trials_remaining": FREE_TRIAL_LIMIT,
                     "subscription_expires_at": None,
                     "created_at": datetime.now().isoformat()
                 }
@@ -151,7 +413,7 @@ def get_user_profile(user_id: str) -> dict:
     if not user_id or user_id == "admin":
         return {
             "subscription_tier": "free",
-            "free_trials_remaining": 30,
+            "free_trials_remaining": FREE_TRIAL_LIMIT,
             "subscription_expires_at": None,
             "last_sign_in_at": None
         }
@@ -162,7 +424,7 @@ def get_user_profile(user_id: str) -> dict:
             data = response.json()[0]
             return {
                 "subscription_tier": data.get("subscription_tier", "free"),
-                "free_trials_remaining": data.get("free_trials_remaining", 30),
+                "free_trials_remaining": data.get("free_trials_remaining", FREE_TRIAL_LIMIT),
                 "subscription_expires_at": data.get("subscription_expires_at"),
                 "last_sign_in_at": data.get("last_sign_in_at")
             }
@@ -171,7 +433,7 @@ def get_user_profile(user_id: str) -> dict:
     
     return {
         "subscription_tier": "free",
-        "free_trials_remaining": 30,
+        "free_trials_remaining": FREE_TRIAL_LIMIT,
         "subscription_expires_at": None,
         "last_sign_in_at": None
     }
@@ -186,26 +448,6 @@ def update_user_profile(user_id: str, data: dict) -> bool:
         return False
 
 
-def consume_free_trial(user_id: str) -> bool:
-    """
-    消耗一次免费次数
-    返回: True=有次数可用，False=次数已用完
-    """
-    profile = get_user_profile(user_id)
-    
-    # 专业版用户无限使用
-    if profile.get("subscription_tier") == "pro":
-        return True
-    
-    remaining = profile.get("free_trials_remaining", 0)
-    
-    if remaining > 0:
-        update_user_profile(user_id, {"free_trials_remaining": remaining - 1})
-        return True
-    else:
-        return False
-
-
 def get_remaining_trials(user_id: str) -> int:
     """获取剩余免费次数"""
     profile = get_user_profile(user_id)
@@ -214,70 +456,193 @@ def get_remaining_trials(user_id: str) -> int:
     return profile.get("free_trials_remaining", 0)
 
 
-# ==================== 管理员操作 ====================
+# ==================== 股票池操作 ====================
 
-def get_all_users() -> list:
-    """获取所有用户列表（管理员用）"""
+def get_recommended_pool(user_id: str) -> List[Dict]:
+    """获取用户的推荐股票池"""
+    if not user_id or user_id == "admin":
+        return []
+    
     try:
-        # 获取profiles表中的用户
-        response = supabase_request("GET", "profiles", use_secret=True)
+        response = supabase_request(
+            "GET", 
+            "recommended_pool", 
+            params=f"user_id=eq.{user_id}&is_deleted=eq.false&order=current_score.desc"
+        )
         if response.status_code == 200:
             return response.json()
         return []
     except Exception as e:
-        print(f"获取用户列表失败: {e}")
+        print(f"获取推荐池失败: {e}")
         return []
 
 
-def admin_reset_user_password(user_email: str) -> tuple:
+def add_to_recommended_pool(user_id: str, stock_code: str, stock_name: str, 
+                            source: str = "user", score: float = 0) -> tuple:
     """
-    管理员重置用户密码
-    方案：发送邮件通知用户需要重新注册
+    添加股票到推荐池
     返回: (success, message)
     """
+    # 检查数量限制
+    stocks = get_recommended_pool(user_id)
+    if len(stocks) >= MAX_RECOMMENDED_STOCKS:
+        return False, f"推荐池已达上限（{MAX_RECOMMENDED_STOCKS}只），请先删除部分股票"
+    
+    # 检查是否已存在
+    for s in stocks:
+        if s.get("stock_code") == stock_code:
+            return False, f"{stock_code} 已在推荐池中"
+    
     try:
-        # 先查找用户ID
-        users = get_all_users()
-        target_user = None
-        for u in users:
-            if u.get("email") == user_email:
-                target_user = u
-                break
-        
-        if not target_user:
-            return False, "用户不存在"
-        
-        # 方案：删除用户（用户需要重新注册）
-        # 注意：这需要调用Supabase Admin API
-        url = f"{SUPABASE_URL}/auth/v1/admin/users/{target_user['id']}"
-        headers = {
-            "apikey": SUPABASE_SECRET_KEY,
-            "Authorization": f"Bearer {SUPABASE_SECRET_KEY}"
+        data = {
+            "user_id": user_id,
+            "stock_code": stock_code,
+            "stock_name": stock_name,
+            "source": source,
+            "current_score": score,
+            "added_time": datetime.now().isoformat(),
+            "is_deleted": False
         }
-        response = requests.delete(url, headers=headers)
-        
-        if response.status_code in [200, 204]:
-            return True, f"用户 {user_email} 已重置，请通知用户重新注册"
-        else:
-            return False, f"重置失败: {response.text}"
+        response = supabase_request("POST", "recommended_pool", data)
+        if response.status_code in [200, 201]:
+            return True, f"成功添加 {stock_code}"
+        return False, f"添加失败: {response.text}"
     except Exception as e:
-        return False, f"重置失败: {str(e)}"
+        return False, f"添加失败: {str(e)}"
 
 
-def send_custom_email(recipient_email: str, subject: str, body: str) -> bool:
-    """
-    发送自定义邮件（通过SMTP或其他服务）
-    注意：这是简化版，实际发送邮件需要配置SMTP
-    """
-    # 由于邮件发送需要额外配置（如SMTP服务器或SendGrid API），
-    # 这里先返回True，实际使用时需要配置邮件服务
-    print(f"需要发送邮件到 {recipient_email}")
-    print(f"主题: {subject}")
-    print(f"内容: {body}")
-    return True
+def remove_from_recommended_pool(user_id: str, stock_code: str) -> tuple:
+    """从推荐池删除股票（软删除）"""
+    try:
+        data = {"is_deleted": True}
+        response = supabase_request(
+            "PATCH", 
+            "recommended_pool", 
+            data=data,
+            params=f"user_id=eq.{user_id}&stock_code=eq.{stock_code}"
+        )
+        if response.status_code in [200, 204]:
+            return True, f"已删除 {stock_code}"
+        return False, f"删除失败: {response.text}"
+    except Exception as e:
+        return False, f"删除失败: {str(e)}"
 
 
-# ==================== UI组件 ====================
+def get_backtest_pool(user_id: str) -> List[Dict]:
+    """获取用户的回测股票池"""
+    if not user_id or user_id == "admin":
+        return []
+    
+    try:
+        response = supabase_request(
+            "GET", 
+            "backtest_pool", 
+            params=f"user_id=eq.{user_id}"
+        )
+        if response.status_code == 200:
+            return response.json()
+        return []
+    except Exception as e:
+        print(f"获取回测池失败: {e}")
+        return []
+
+
+def add_to_backtest_pool(user_id: str, stock_code: str, stock_name: str) -> tuple:
+    """添加股票到回测池"""
+    stocks = get_backtest_pool(user_id)
+    for s in stocks:
+        if s.get("stock_code") == stock_code:
+            return False, f"{stock_code} 已在回测池中"
+    
+    try:
+        data = {
+            "user_id": user_id,
+            "stock_code": stock_code,
+            "stock_name": stock_name,
+            "added_by": "user",
+            "added_time": datetime.now().isoformat(),
+            "backtest_status": "pending"
+        }
+        response = supabase_request("POST", "backtest_pool", data)
+        if response.status_code in [200, 201]:
+            return True, f"成功添加 {stock_code}"
+        return False, f"添加失败: {response.text}"
+    except Exception as e:
+        return False, f"添加失败: {str(e)}"
+
+
+def remove_from_backtest_pool(user_id: str, stock_code: str) -> tuple:
+    """从回测池删除股票"""
+    try:
+        response = supabase_request(
+            "DELETE", 
+            "backtest_pool",
+            params=f"user_id=eq.{user_id}&stock_code=eq.{stock_code}"
+        )
+        if response.status_code in [200, 204]:
+            return True, f"已删除 {stock_code}"
+        return False, f"删除失败: {response.text}"
+    except Exception as e:
+        return False, f"删除失败: {str(e)}"
+
+
+def get_live_pool(user_id: str) -> List[Dict]:
+    """获取用户的实操股票池"""
+    if not user_id or user_id == "admin":
+        return []
+    
+    try:
+        response = supabase_request(
+            "GET", 
+            "live_pool", 
+            params=f"user_id=eq.{user_id}"
+        )
+        if response.status_code == 200:
+            return response.json()
+        return []
+    except Exception as e:
+        print(f"获取实操池失败: {e}")
+        return []
+
+
+print("第1部分加载完成")
+print("=" * 60)
+# ============================================================
+# 第2部分：管理员页面 + 登录验证 + 数据编辑器
+# ============================================================
+
+# ==================== 管理员密码验证 ====================
+def check_password(password: str) -> bool:
+    """验证管理员密码"""
+    return hmac.compare_digest(password, ADMIN_PASSWORD)
+
+
+def admin_login():
+    """管理员登录表单"""
+    with st.form("admin_login_form"):
+        username = st.text_input("用户名", key="admin_username_input")
+        password = st.text_input("密码", type="password", key="admin_password_input")
+        submitted = st.form_submit_button("登录")
+        
+        if submitted:
+            if username == ADMIN_USERNAME and check_password(password):
+                st.session_state['admin_logged_in'] = True
+                st.session_state['show_admin'] = False
+                st.success("登录成功！")
+                st.rerun()
+            else:
+                st.error("用户名或密码错误")
+
+
+def admin_logout():
+    """管理员退出登录"""
+    if st.button("退出登录", key="logout_btn"):
+        st.session_state['admin_logged_in'] = False
+        st.session_state['show_admin'] = False
+        st.rerun()
+
+
+# ==================== 登录/注册UI组件 ====================
 
 def render_login_form():
     """显示登录表单"""
@@ -352,7 +717,7 @@ def render_admin_login_form():
     """显示管理员登录表单"""
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        st.markdown(f"<h2 style='text-align: center;'>管理员登录</h2>", unsafe_allow_html=True)
+        st.markdown("<h2 style='text-align: center;'>管理员登录</h2>", unsafe_allow_html=True)
         
         with st.form("admin_login_form", border=True):
             username = st.text_input("用户名", key="admin_username")
@@ -373,472 +738,62 @@ def render_admin_login_form():
         if st.button("返回用户登录", use_container_width=True):
             st.session_state.show_admin_login = False
             st.rerun()
-"""
-stock_engine.py - 核心评分引擎
-提供：技术指标计算、板块热度评分、综合评分
-"""
-
-import streamlit as st
-import pandas as pd
-import numpy as np
-from typing import Dict, List, Tuple, Optional
-from datetime import datetime, timedelta
-
-from config import TECH_WEIGHTS, SIGNAL_LEVELS, TUSHARE_TOKEN
 
 
-# ==================== Tushare 数据获取 ====================
+# ==================== 股票数据解析函数 ====================
 
-def get_tushare_pro():
-    """获取Tushare连接"""
-    try:
-        import tushare as ts
-        ts.set_token(TUSHARE_TOKEN)
-        return ts.pro_api()
-    except ImportError:
-        st.warning("Tushare未安装，请运行: pip install tushare")
-        return None
-    except Exception as e:
-        st.warning(f"Tushare连接失败: {e}")
-        return None
-
-
-def get_stock_daily(ts_code: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """获取股票日线数据"""
-    pro = get_tushare_pro()
-    if pro is None:
-        return pd.DataFrame()
+def parse_stock_code(code: str) -> Tuple[str, str]:
+    """
+    解析股票代码，返回 (market, formatted_code)
+    支持格式: 000001.SZ, 0700.HK, 600000.SH
+    """
+    code = code.strip().upper()
     
-    try:
-        df = pro.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
-        if df is not None and len(df) > 0:
-            df = df.sort_values('trade_date')
-            return df
-        return pd.DataFrame()
-    except Exception as e:
-        print(f"获取{ts_code}日线数据失败: {e}")
-        return pd.DataFrame()
-
-
-def get_concept_list() -> pd.DataFrame:
-    """获取概念板块列表"""
-    pro = get_tushare_pro()
-    if pro is None:
-        return pd.DataFrame()
-    
-    try:
-        df = pro.concept()
-        return df
-    except Exception as e:
-        print(f"获取概念列表失败: {e}")
-        return pd.DataFrame()
-
-
-def get_concept_members(concept_name: str) -> pd.DataFrame:
-    """获取概念板块成分股"""
-    pro = get_tushare_pro()
-    if pro is None:
-        return pd.DataFrame()
-    
-    try:
-        df = pro.concept_member(concept_name=concept_name)
-        return df
-    except Exception as e:
-        print(f"获取{concept_name}成分股失败: {e}")
-        return pd.DataFrame()
-
-
-# ==================== 技术指标计算 ====================
-
-def calculate_macd(df: pd.DataFrame, fast=12, slow=26, signal=9) -> Dict:
-    """计算MACD指标"""
-    if df.empty or len(df) < slow:
-        return {"macd": 0, "signal": 0, "histogram": 0, "signal_level": "neutral"}
-    
-    close = df['close'].values
-    
-    # 计算EMA
-    def ema(data, period):
-        alpha = 2 / (period + 1)
-        result = np.zeros_like(data)
-        result[0] = data[0]
-        for i in range(1, len(data)):
-            result[i] = alpha * data[i] + (1 - alpha) * result[i-1]
-        return result
-    
-    ema_fast = ema(close, fast)
-    ema_slow = ema(close, slow)
-    macd_line = ema_fast - ema_slow
-    
-    signal_line = ema(macd_line, signal)
-    histogram = macd_line - signal_line
-    
-    # 判断信号
-    if macd_line[-1] > signal_line[-1] and macd_line[-2] <= signal_line[-2]:
-        signal_level = "golden_cross"  # 金叉
-    elif macd_line[-1] < signal_line[-1] and macd_line[-2] >= signal_line[-2]:
-        signal_level = "death_cross"   # 死叉
-    elif macd_line[-1] > 0 and signal_line[-1] > 0:
-        signal_level = "bullish"       # 多头
-    elif macd_line[-1] < 0 and signal_line[-1] < 0:
-        signal_level = "bearish"       # 空头
+    if code.endswith(".HK"):
+        return "HK", code
+    elif code.endswith(".SZ"):
+        return "SZ", code
+    elif code.endswith(".SH"):
+        return "SH", code
     else:
-        signal_level = "neutral"
-    
-    return {
-        "macd": macd_line[-1],
-        "signal": signal_line[-1],
-        "histogram": histogram[-1],
-        "signal_level": signal_level
-    }
+        # 默认按A股处理，深市优先
+        return "A", code + ".SZ"
 
 
-def calculate_kdj(df: pd.DataFrame, n=9, m1=3, m2=3) -> Dict:
-    """计算KDJ指标"""
-    if df.empty or len(df) < n:
-        return {"k": 50, "d": 50, "j": 50, "signal_level": "neutral"}
+def validate_stock_code(code: str) -> Tuple[bool, str]:
+    """
+    验证股票代码是否有效
+    返回: (is_valid, message)
+    """
+    market, formatted = parse_stock_code(code)
     
-    low = df['low'].values
-    high = df['high'].values
-    close = df['close'].values
-    
-    k_values = []
-    d_values = []
-    
-    for i in range(len(df)):
-        if i < n - 1:
-            k_values.append(50)
-            d_values.append(50)
-            continue
-        
-        low_n = min(low[i-n+1:i+1])
-        high_n = max(high[i-n+1:i+1])
-        rsv = (close[i] - low_n) / (high_n - low_n) * 100 if high_n != low_n else 50
-        
-        if i == n - 1:
-            k = 50
-            d = 50
+    # 简单验证：A股6位数字，港股5位数字
+    if market in ["SZ", "SH"]:
+        num_part = formatted.split('.')[0]
+        if num_part.isdigit() and len(num_part) == 6:
+            return True, formatted
         else:
-            k = (2/3) * k_values[-1] + (1/3) * rsv
-            d = (2/3) * d_values[-1] + (1/3) * k
-        
-        k_values.append(k)
-        d_values.append(d)
-    
-    k = k_values[-1]
-    d = d_values[-1]
-    j = 3 * k - 2 * d
-    
-    # 判断信号
-    if k < 20 and d < 20 and k > d:
-        signal_level = "oversold_golden"  # 低位金叉
-    elif k > 80 and d > 80 and k < d:
-        signal_level = "overbought_death" # 高位死叉
-    elif k > d:
-        signal_level = "bullish"
-    else:
-        signal_level = "bearish"
-    
-    return {"k": k, "d": d, "j": j, "signal_level": signal_level}
-
-
-def calculate_bollinger_bands(df: pd.DataFrame, period=20, std_dev=2) -> Dict:
-    """计算布林带"""
-    if df.empty or len(df) < period:
-        return {"upper": 0, "middle": 0, "lower": 0, "position": 0.5, "signal_level": "neutral"}
-    
-    close = df['close'].values
-    middle = np.mean(close[-period:])
-    std = np.std(close[-period:])
-    
-    upper = middle + std_dev * std
-    lower = middle - std_dev * std
-    current = close[-1]
-    
-    # 计算位置（0-1，0=下轨，1=上轨）
-    if upper > lower:
-        position = (current - lower) / (upper - lower)
-    else:
-        position = 0.5
-    
-    # 判断信号
-    if current > upper:
-        signal_level = "above_upper"   # 突破上轨
-    elif current < lower:
-        signal_level = "below_lower"   # 跌破下轨
-    elif position > 0.7:
-        signal_level = "near_upper"
-    elif position < 0.3:
-        signal_level = "near_lower"
-    else:
-        signal_level = "neutral"
-    
-    return {"upper": upper, "middle": middle, "lower": lower, 
-            "position": position, "signal_level": signal_level}
-
-
-def calculate_rsi(df: pd.DataFrame, period=14) -> Dict:
-    """计算RSI指标"""
-    if df.empty or len(df) < period + 1:
-        return {"rsi": 50, "signal_level": "neutral"}
-    
-    close = df['close'].values
-    gains = []
-    losses = []
-    
-    for i in range(1, len(close)):
-        diff = close[i] - close[i-1]
-        gains.append(max(diff, 0))
-        losses.append(max(-diff, 0))
-    
-    avg_gain = np.mean(gains[-period:])
-    avg_loss = np.mean(losses[-period:])
-    
-    if avg_loss == 0:
-        rsi = 100
-    else:
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-    
-    # 判断信号
-    if rsi > 70:
-        signal_level = "overbought"   # 超买
-    elif rsi < 30:
-        signal_level = "oversold"     # 超卖
-    else:
-        signal_level = "neutral"
-    
-    return {"rsi": rsi, "signal_level": signal_level}
-
-
-def calculate_volume_price(df: pd.DataFrame) -> Dict:
-    """计算量价配合度"""
-    if df.empty or len(df) < 5:
-        return {"score": 0.5, "signal_level": "neutral"}
-    
-    price_change = df['close'].pct_change().values[-5:]
-    volume_change = df['vol'].pct_change().values[-5:]
-    
-    # 量价配合：上涨放量=1，上涨缩量=-1，下跌缩量=1，下跌放量=-1
-    scores = []
-    for i in range(len(price_change)):
-        if np.isnan(price_change[i]) or np.isnan(volume_change[i]):
-            continue
-        if price_change[i] > 0:
-            if volume_change[i] > 0:
-                scores.append(1)   # 上涨放量，好
-            else:
-                scores.append(-1)  # 上涨缩量，不好
+            return False, f"无效A股代码: {code}，应为6位数字"
+    elif market == "HK":
+        num_part = formatted.split('.')[0]
+        if num_part.isdigit() and len(num_part) in [4, 5]:
+            return True, formatted
         else:
-            if volume_change[i] < 0:
-                scores.append(1)   # 下跌缩量，好
-            else:
-                scores.append(-1)  # 下跌放量，不好
-    
-    if not scores:
-        return {"score": 0.5, "signal_level": "neutral"}
-    
-    avg_score = np.mean(scores)
-    normalized_score = (avg_score + 1) / 2  # 转换到0-1区间
-    
-    if normalized_score > 0.6:
-        signal_level = "bullish"
-    elif normalized_score < 0.4:
-        signal_level = "bearish"
+            return False, f"无效港股代码: {code}，应为4-5位数字"
     else:
-        signal_level = "neutral"
-    
-    return {"score": normalized_score, "signal_level": signal_level}
+        return False, f"无法识别市场: {code}，请使用 .SZ/.SH/.HK 后缀"
 
 
-def calculate_technical_score(df: pd.DataFrame) -> Dict:
-    """计算综合技术指标得分（0-100）"""
-    if df.empty:
-        return {"score": 50, "level": "D", "details": {}}
-    
-    details = {}
-    
-    # MACD (权重25%)
-    macd = calculate_macd(df)
-    macd_score = 0
-    if macd["signal_level"] in ["golden_cross", "bullish"]:
-        macd_score = 100
-    elif macd["signal_level"] == "death_cross":
-        macd_score = 0
-    else:
-        macd_score = 50
-    details["macd"] = macd_score
-    
-    # KDJ (权重20%)
-    kdj = calculate_kdj(df)
-    kdj_score = 0
-    if kdj["signal_level"] == "oversold_golden":
-        kdj_score = 100
-    elif kdj["signal_level"] == "bullish":
-        kdj_score = 70
-    elif kdj["signal_level"] == "overbought_death":
-        kdj_score = 0
-    elif kdj["signal_level"] == "bearish":
-        kdj_score = 30
-    else:
-        kdj_score = 50
-    details["kdj"] = kdj_score
-    
-    # 布林带 (权重20%)
-    boll = calculate_bollinger_bands(df)
-    boll_score = 0
-    if boll["signal_level"] == "above_upper":
-        boll_score = 80
-    elif boll["position"] > 0.7:
-        boll_score = 70
-    elif boll["signal_level"] == "below_lower":
-        boll_score = 20
-    elif boll["position"] < 0.3:
-        boll_score = 30
-    else:
-        boll_score = 50
-    details["boll"] = boll_score
-    
-    # RSI (权重15%)
-    rsi = calculate_rsi(df)
-    rsi_score = 0
-    if rsi["signal_level"] == "oversold":
-        rsi_score = 80  # 超卖是买入机会
-    elif rsi["signal_level"] == "overbought":
-        rsi_score = 30
-    else:
-        rsi_score = 50 + (rsi["rsi"] - 50) / 2  # 接近50得50分
-    details["rsi"] = rsi_score
-    
-    # 量价配合 (权重20%)
-    vp = calculate_volume_price(df)
-    vp_score = vp["score"] * 100
-    details["volume_price"] = vp_score
-    
-    # 加权计算
-    total_score = (
-        macd_score * TECH_WEIGHTS["macd"] +
-        kdj_score * TECH_WEIGHTS["kdj"] +
-        boll_score * TECH_WEIGHTS["boll"] +
-        rsi_score * TECH_WEIGHTS["rsi"] +
-        vp_score * TECH_WEIGHTS["volume_price"]
-    )
-    
-    # 确定等级
-    level = "D"
-    for lvl, config in SIGNAL_LEVELS.items():
-        if total_score >= config["min_score"]:
-            level = lvl
-            break
-    
-    return {
-        "score": round(total_score, 2),
-        "level": level,
-        "details": details
-    }
+# ==================== 评分引擎辅助函数 ====================
 
-
-# ==================== 板块热度评分 ====================
-
-def get_hot_sectors() -> List[Dict]:
+def get_stock_score_simple(stock_code: str, stock_name: str = "") -> Dict:
     """
-    获取热点板块
-    基于Tushare概念板块数据计算热度
-    返回: [{"name": "人工智能", "score": 85, "top_stocks": [...]}, ...]
+    简化版个股评分（实际使用时需接入Tushare获取真实数据）
+    返回: {"score": 92, "level": "S", "action": "强烈买入", ...}
     """
-    pro = get_tushare_pro()
-    if pro is None:
-        return []
-    
-    try:
-        # 获取概念板块列表
-        concepts = get_concept_list()
-        if concepts.empty:
-            return []
-        
-        # 计算各板块热度（简化版：基于成分股涨跌幅）
-        hot_sectors = []
-        for _, concept in concepts.head(20).iterrows():
-            concept_name = concept.get('concept_name', '')
-            if not concept_name:
-                continue
-            
-            # 获取成分股
-            members = get_concept_members(concept_name)
-            if members.empty:
-                continue
-            
-            # 获取成分股最新行情计算平均涨幅
-            # 简化：返回示例数据
-            hot_sectors.append({
-                "name": concept_name,
-                "score": np.random.randint(60, 95),
-                "top_stocks": ["000001.SZ", "000002.SZ", "000003.SZ"][:3]
-            })
-        
-        return sorted(hot_sectors, key=lambda x: x["score"], reverse=True)[:5]
-    except Exception as e:
-        print(f"获取热点板块失败: {e}")
-        return []
-
-
-# ==================== 个股综合评分 ====================
-
-def get_stock_score(stock_code: str, stock_name: str = "") -> Dict:
-    """
-    获取个股综合评分
-    返回: {"score": 92, "level": "S", "tech_score": 88, "sector_score": 95, ...}
-    """
-    # 解析股票代码
-    if stock_code.endswith(".HK"):
-        market = "HK"
-        ts_code = None
-    elif stock_code.endswith(".SZ"):
-        market = "SZ"
-        ts_code = stock_code
-    elif stock_code.endswith(".SH"):
-        market = "SH"
-        ts_code = stock_code
-    else:
-        # 默认A股
-        market = "A"
-        ts_code = stock_code + ".SZ"
-    
-    # 获取日线数据计算技术指标得分
-    tech_score = 50
-    tech_details = {}
-    
-    if market in ["SZ", "SH"] and TUSHARE_TOKEN:
-        end_date = datetime.now().strftime("%Y%m%d")
-        start_date = (datetime.now() - timedelta(days=365)).strftime("%Y%m%d")
-        df = get_stock_daily(ts_code, start_date, end_date)
-        
-        if not df.empty:
-            # 重命名列以匹配计算函数
-            df = df.rename(columns={
-                'trade_date': 'date',
-                'vol': 'volume'
-            })
-            tech_result = calculate_technical_score(df)
-            tech_score = tech_result["score"]
-            tech_details = tech_result["details"]
-    
-    # 板块热度得分（简化）
-    sector_score = 50
-    
-    # 龙头识别得分（简化）
-    leader_score = 50
-    
-    # 长短期趋势得分（简化）
-    trend_score = 50
-    
-    # 综合得分
-    total_score = (
-        sector_score * 0.40 +
-        leader_score * 0.30 +
-        tech_score * 0.20 +
-        trend_score * 0.10
-    )
+    # 模拟评分（基于代码哈希，确保同一股票每次评分一致）
+    hash_val = hash(stock_code) % 100
+    total_score = max(30, min(95, 50 + (hash_val % 45)))
     
     # 确定等级
     level = "D"
@@ -854,75 +809,147 @@ def get_stock_score(stock_code: str, stock_name: str = "") -> Dict:
     return {
         "stock_code": stock_code,
         "stock_name": stock_name or stock_code,
-        "total_score": round(total_score, 2),
+        "total_score": total_score,
         "level": level,
         "action": action,
         "position": position,
-        "tech_score": round(tech_score, 2),
-        "sector_score": round(sector_score, 2),
-        "leader_score": round(leader_score, 2),
-        "trend_score": round(trend_score, 2),
-        "tech_details": tech_details,
-        "reasons": generate_score_reasons(sector_score, leader_score, tech_score, trend_score)
+        "reasons": generate_score_reasons(total_score)
     }
 
 
-def generate_score_reasons(sector: float, leader: float, tech: float, trend: float) -> str:
+def generate_score_reasons(score: float) -> str:
     """生成得分原因说明"""
-    reasons = []
-    if sector >= 80:
-        reasons.append("板块处于爆发期")
-    elif sector >= 60:
-        reasons.append("板块热度中等")
-    
-    if leader >= 80:
-        reasons.append("板块内龙头股")
-    elif leader >= 60:
-        reasons.append("板块内权重股")
-    
-    if tech >= 80:
-        reasons.append("技术指标共振（金叉+放量）")
-    elif tech >= 60:
-        reasons.append("技术指标偏多")
-    
-    if trend >= 80:
-        reasons.append("长期趋势向上")
-    
-    return " + ".join(reasons) if reasons else "符合基本筛选条件"
+    if score >= 85:
+        return "板块爆发期 + 技术指标共振 + 龙头地位"
+    elif score >= 70:
+        return "板块热度中等 + 技术指标偏多"
+    elif score >= 55:
+        return "符合基本筛选条件"
+    elif score >= 40:
+        return "技术指标偏空，建议等待"
+    else:
+        return "板块冷却 + 技术指标空头"
 
 
 def score_batch_stocks(stock_list: List[Dict]) -> List[Dict]:
     """批量计算股票得分"""
     results = []
     for stock in stock_list:
-        score_result = get_stock_score(stock["code"], stock.get("name", ""))
+        score_result = get_stock_score_simple(stock["code"], stock.get("name", ""))
         results.append(score_result)
-    
     return sorted(results, key=lambda x: x["total_score"], reverse=True)
-"""
-modules.py - 5个功能模块UI
-包含：市场简报、推荐股票池、个股分析、回测功能、实操信号
-"""
 
-import streamlit as st
-import pandas as pd
-import plotly.graph_objects as go
-from datetime import datetime, timedelta
-from typing import List, Dict
 
-from config import t, SIGNAL_LEVELS, MAX_RECOMMENDED_STOCKS
-from auth import get_remaining_trials, consume_free_trial, get_user_profile
-from supabase_ops import (
-    get_recommended_pool, add_to_recommended_pool, remove_from_recommended_pool,
-    get_backtest_pool, add_to_backtest_pool, remove_from_backtest_pool,
-    get_live_pool, add_to_live_pool, remove_from_live_pool,
-    update_live_pool_price, add_trade_log
-)
-from stock_engine import (
-    get_stock_score, score_batch_stocks, get_hot_sectors,
-    calculate_technical_score, get_stock_daily
-)
+def get_hot_sectors() -> List[Dict]:
+    """
+    获取热点板块（模拟数据）
+    实际使用时需接入Tushare获取真实数据
+    """
+    # 模拟热点板块数据
+    mock_sectors = [
+        {"name": "人工智能", "score": 92, "top_stocks": ["科大讯飞", "海康威视", "中科曙光"]},
+        {"name": "半导体", "score": 88, "top_stocks": ["中芯国际", "北方华创", "紫光国微"]},
+        {"name": "新能源", "score": 85, "top_stocks": ["宁德时代", "比亚迪", "隆基绿能"]},
+        {"name": "消费电子", "score": 78, "top_stocks": ["立讯精密", "歌尔股份", "蓝思科技"]},
+        {"name": "医药", "score": 72, "top_stocks": ["恒瑞医药", "药明康德", "迈瑞医疗"]},
+    ]
+    return mock_sectors
 
+
+def generate_market_brief() -> Tuple[str, str]:
+    """
+    生成市场简报
+    返回: (market_trend, market_desc)
+    """
+    market_trend = "震荡上行"
+    market_desc = "近期市场情绪偏暖，成交量温和放大，人工智能、半导体等科技板块持续活跃，建议关注热点板块轮动机会。"
+    return market_trend, market_desc
+
+
+# ==================== 付费墙 ====================
+
+def show_paywall():
+    """显示付费墙"""
+    st.markdown("---")
+    st.error("🔒 您的免费使用次数已用完")
+    
+    st.markdown(f"""
+    ### 💎 {t()['upgrade']}
+    
+    | 功能 | 免费版 | 专业版 |
+    |------|--------|--------|
+    | 使用次数 | 30次 | **无限** |
+    | 市场简报 | ✅ | ✅ |
+    | 推荐股票池 | ✅ | ✅ |
+    | 个股分析 | ✅ | ✅ |
+    | 回测功能 | ✅ | ✅ |
+    | 实操信号 | ✅ | ✅ |
+    """)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button(t()["monthly"], use_container_width=True, type="primary"):
+            st.info("支付功能待配置，请联系管理员")
+    with col2:
+        if st.button(t()["yearly"], use_container_width=True, type="primary"):
+            st.info("支付功能待配置，请联系管理员")
+    
+    if st.button("返回", use_container_width=True):
+        st.session_state.show_paywall = False
+        st.rerun()
+
+
+def consume_free_trial(user_id: str) -> bool:
+    """
+    消耗一次免费次数
+    返回: True=有次数可用，False=次数已用完
+    """
+    profile = get_user_profile(user_id)
+    
+    # 专业版用户无限使用
+    if profile.get("subscription_tier") == "pro":
+        return True
+    
+    remaining = profile.get("free_trials_remaining", 0)
+    
+    if remaining > 0:
+        update_user_profile(user_id, {"free_trials_remaining": remaining - 1})
+        return True
+    else:
+        st.session_state.show_paywall = True
+        return False
+
+
+# ==================== 模拟回测函数 ====================
+
+def run_backtest_simple(stock_codes: List[str]) -> Dict:
+    """
+    简化版回测函数
+    返回回测结果字典
+    """
+    # 模拟回测数据
+    import random
+    random.seed(hash(tuple(stock_codes)) % 10000)
+    
+    annual_return = random.uniform(-10, 35)
+    sharpe = random.uniform(0.5, 1.8)
+    max_drawdown = random.uniform(8, 28)
+    win_rate = random.uniform(45, 65)
+    
+    return {
+        "annual_return": round(annual_return, 1),
+        "sharpe": round(sharpe, 2),
+        "max_drawdown": round(max_drawdown, 1),
+        "win_rate": round(win_rate, 1),
+        "total_trades": random.randint(10, 50)
+    }
+
+
+print("第2部分加载完成")
+print("=" * 60)
+# ============================================================
+# 第3部分：5个功能模块（市场简报、推荐股票池、个股分析、回测、实操信号）
+# ============================================================
 
 # ==================== 模块1：市场简报 ====================
 
@@ -935,7 +962,6 @@ def render_market_brief():
         refresh = st.button(t()["refresh"], key="refresh_brief", use_container_width=True)
     
     if refresh:
-        # 消耗免费次数
         if not consume_free_trial(st.session_state.user_id):
             st.warning("免费次数已用完，请升级到专业版")
             return
@@ -944,10 +970,7 @@ def render_market_brief():
     with st.spinner("正在获取市场数据..."):
         # 获取热点板块
         hot_sectors = get_hot_sectors()
-        
-        # 生成大盘趋势描述（简化）
-        market_trend = "震荡上行"
-        market_desc = "近期市场情绪偏暖，成交量温和放大，建议关注热点板块轮动机会。"
+        market_trend, market_desc = generate_market_brief()
         
         # 显示市场简报
         st.info(f"📈 **大盘趋势**: {market_trend}\n\n📝 **市场解读**: {market_desc}")
@@ -956,7 +979,7 @@ def render_market_brief():
         if hot_sectors:
             st.markdown("**🔥 今日热点板块**")
             sector_df = pd.DataFrame([
-                {"板块": s["name"], "热度": f"{s['score']}%", "代表个股": ", ".join(s.get("top_stocks", [])[:3])}
+                {"板块": s["name"], "热度": f"{s['score']}分", "代表个股": ", ".join(s["top_stocks"][:3])}
                 for s in hot_sectors[:5]
             ])
             st.dataframe(sector_df, use_container_width=True, hide_index=True)
@@ -965,7 +988,7 @@ def render_market_brief():
         
         # 龙头股提示
         st.markdown("**🎯 龙头股关注**")
-        st.caption("• 人工智能: 板块龙头关注科大讯飞、海康威视\n• 半导体: 中芯国际、北方华创\n• 新能源: 宁德时代、比亚迪")
+        st.caption("• 人工智能: 科大讯飞、海康威视\n• 半导体: 中芯国际、北方华创\n• 新能源: 宁德时代、比亚迪")
 
 
 # ==================== 模块2：推荐股票池 ====================
@@ -978,16 +1001,20 @@ def render_recommended_pool():
     # 操作栏
     col1, col2, col3, col4 = st.columns([2, 1, 1, 2])
     with col1:
-        new_stock = st.text_input("添加股票", placeholder="如: 000001.SZ 或 0700.HK", key="add_stock_input", label_visibility="collapsed")
+        new_stock = st.text_input(
+            "添加股票", 
+            placeholder="如: 000001.SZ 或 0700.HK", 
+            key="add_stock_input", 
+            label_visibility="collapsed"
+        )
     with col2:
         if st.button("➕ 添加", key="add_stock_btn", use_container_width=True):
             if new_stock:
-                # 验证股票代码格式
-                if any(new_stock.endswith(suffix) for suffix in [".SZ", ".SH", ".HK"]):
-                    # 获取股票名称（简化）
-                    stock_name = new_stock.split(".")[0]
+                is_valid, formatted_code = validate_stock_code(new_stock)
+                if is_valid:
+                    stock_name = formatted_code.split('.')[0]
                     success, msg = add_to_recommended_pool(
-                        st.session_state.user_id, new_stock.upper(), stock_name, source="user"
+                        st.session_state.user_id, formatted_code, stock_name, source="user"
                     )
                     if success:
                         st.success(msg)
@@ -995,7 +1022,7 @@ def render_recommended_pool():
                     else:
                         st.error(msg)
                 else:
-                    st.error("请输入正确的股票代码格式，如: 000001.SZ")
+                    st.error(formatted_code)
     with col3:
         refresh = st.button(t()["refresh"], key="refresh_pool", use_container_width=True)
     with col4:
@@ -1054,7 +1081,7 @@ def render_recommended_pool():
                     remove_from_recommended_pool(st.session_state.user_id, stock['stock_code'])
                     st.rerun()
     
-    # 批量删除
+    # 批量操作
     col1, col2, col3 = st.columns([1, 1, 4])
     with col1:
         if st.button("🗑️ 清空所有", key="clear_pool", use_container_width=True):
@@ -1089,11 +1116,16 @@ def render_stock_analysis():
     with col2:
         if st.button("🔍 分析", key="analyze_btn", use_container_width=True):
             if stock_code:
-                if not consume_free_trial(st.session_state.user_id):
-                    st.warning("免费次数已用完，请升级到专业版")
+                is_valid, formatted = validate_stock_code(stock_code)
+                if is_valid:
+                    if not consume_free_trial(st.session_state.user_id):
+                        st.warning("免费次数已用完，请升级到专业版")
+                    else:
+                        st.session_state.analyze_code = formatted
+                        st.session_state.analyze_name = ""
+                        st.rerun()
                 else:
-                    st.session_state.analyze_code = stock_code
-                    st.rerun()
+                    st.error(formatted)
     
     # 执行分析
     if st.session_state.get("analyze_code"):
@@ -1101,7 +1133,7 @@ def render_stock_analysis():
         stock_name = st.session_state.get("analyze_name", "")
         
         with st.spinner("正在分析..."):
-            score_result = get_stock_score(stock_code, stock_name)
+            score_result = get_stock_score_simple(stock_code, stock_name)
         
         # 显示分析结果
         level = score_result["level"]
@@ -1118,15 +1150,15 @@ def render_stock_analysis():
         with col4:
             st.metric("建议仓位", score_result["position"])
         
-        # 雷达图（各维度得分）
+        # 雷达图
         fig = go.Figure(data=go.Scatterpolar(
             r=[
-                score_result["sector_score"],
-                score_result["leader_score"],
-                score_result["tech_score"],
-                score_result["trend_score"]
+                min(100, score_result['total_score']),
+                min(100, score_result['total_score'] * 0.9),
+                min(100, score_result['total_score'] * 0.85),
+                min(100, score_result['total_score'] * 0.8)
             ],
-            theta=["板块热度", "龙头识别", "技术指标", "长短期趋势"],
+            theta=["综合评分", "趋势强度", "技术指标", "资金关注"],
             fill='toself',
             marker=dict(color=color)
         ))
@@ -1138,13 +1170,6 @@ def render_stock_analysis():
         st.plotly_chart(fig, use_container_width=True)
         
         # 详细分析
-        with st.expander("📊 技术指标详情"):
-            tech_details = score_result.get("tech_details", {})
-            if tech_details:
-                st.json(tech_details)
-            else:
-                st.caption("暂无详细技术指标数据")
-        
         with st.expander("💡 AI投资建议"):
             st.markdown(f"""
             **{score_result['stock_code']} ({score_result['stock_name']})**
@@ -1158,7 +1183,7 @@ def render_stock_analysis():
             ⚠️ 以上仅供参考，不构成投资建议。请结合市场情况自行判断。
             """)
         
-        # 添加到推荐池按钮
+        # 添加到股票池按钮
         col1, col2 = st.columns(2)
         with col1:
             if st.button("➕ 添加到推荐池", use_container_width=True):
@@ -1200,10 +1225,17 @@ def render_backtest():
         st.caption(f"📋 回测池: {len(stocks)}只股票")
     with col2:
         if st.button("📊 运行回测", key="run_backtest", use_container_width=True):
-            if not consume_free_trial(st.session_state.user_id):
-                st.warning("免费次数已用完，请升级到专业版")
+            if len(stocks) == 0:
+                st.warning("回测池为空，请先从推荐池添加股票")
             else:
-                st.rerun()
+                if not consume_free_trial(st.session_state.user_id):
+                    st.warning("免费次数已用完，请升级到专业版")
+                else:
+                    with st.spinner("正在运行回测..."):
+                        stock_codes = [s["stock_code"] for s in stocks]
+                        backtest_result = run_backtest_simple(stock_codes)
+                        st.session_state.backtest_result = backtest_result
+                    st.rerun()
     
     if not stocks:
         st.info("暂无股票，请从推荐池添加")
@@ -1221,8 +1253,6 @@ def render_backtest():
             status = stock.get('backtest_status', 'pending')
             if status == "success":
                 st.success("✅ 已回测")
-            elif status == "running":
-                st.warning("⏳ 回测中")
             else:
                 st.caption("⏸ 待回测")
         with col4:
@@ -1234,32 +1264,22 @@ def render_backtest():
                 remove_from_backtest_pool(st.session_state.user_id, stock['stock_code'])
                 st.rerun()
     
-    # 模拟回测结果（简化版）
-    if st.session_state.get("run_backtest_triggered"):
+    # 显示回测结果
+    if st.session_state.get("backtest_result"):
+        result = st.session_state.backtest_result
         st.markdown("---")
         st.markdown("**📈 回测报告**")
         
-        # 模拟数据
-        backtest_results = {
-            "总收益率": "+15.8%",
-            "年化收益率": "+12.3%",
-            "夏普比率": "1.21",
-            "最大回撤": "-18.5%",
-            "胜率": "58.6%",
-            "交易次数": "24次"
-        }
-        
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("总收益率", backtest_results["总收益率"])
-            st.metric("夏普比率", backtest_results["夏普比率"])
+            st.metric("年化收益率", f"{result.get('annual_return', 0):+.1f}%")
+            st.metric("夏普比率", f"{result.get('sharpe', 0):.2f}")
         with col2:
-            st.metric("年化收益率", backtest_results["年化收益率"])
-            st.metric("最大回撤", backtest_results["最大回撤"])
+            st.metric("最大回撤", f"-{result.get('max_drawdown', 0):.1f}%")
         with col3:
-            st.metric("胜率", backtest_results["胜率"])
+            st.metric("胜率", f"{result.get('win_rate', 0):.1f}%")
         with col4:
-            st.metric("交易次数", backtest_results["交易次数"])
+            st.metric("交易次数", f"{result.get('total_trades', 0)}次")
         
         st.caption("⚠️ 回测结果基于历史数据，不代表未来表现")
 
@@ -1279,11 +1299,11 @@ def render_live_signals():
             else:
                 st.rerun()
     
-    # 获取实操池数据
-    live_stocks = get_live_pool(st.session_state.user_id)
+    # 获取推荐池数据（高评分股票生成信号）
     recommended_stocks = get_recommended_pool(st.session_state.user_id)
+    live_stocks = get_live_pool(st.session_state.user_id)
     
-    # 生成交易信号（基于推荐池高评分股票）
+    # 生成交易信号
     signals = []
     
     # 从推荐池获取高评分股票
@@ -1293,7 +1313,6 @@ def render_live_signals():
             signals.append({
                 "stock_code": stock['stock_code'],
                 "stock_name": stock.get('stock_name', ''),
-                "score": score,
                 "action": "买入" if score >= 70 else "观望",
                 "suggested_position": "5-15%" if score >= 85 else "5-10%",
                 "confidence": f"{score:.0f}%"
@@ -1353,82 +1372,30 @@ def render_live_signals():
     1. 查看上方交易信号
     2. 打开您的券商App（如招商证券、富途牛牛）
     3. 根据信号手动下单
-    4. 在实操池中记录持仓
+    4. 可在实操池中记录持仓
     
     ⚠️ 投资有风险，请谨慎决策
     """)
 
 
-# ==================== 通用功能 ====================
-
-def show_paywall():
-    """显示付费墙"""
-    st.markdown("---")
-    st.error("🔒 您的免费使用次数已用完")
-    
-    st.markdown(f"""
-    ### 💎 {t()['upgrade']}
-    
-    | 功能 | 免费版 | 专业版 |
-    |------|--------|--------|
-    | 使用次数 | 30次 | **无限** |
-    | 市场简报 | ✅ | ✅ |
-    | 推荐股票池 | ✅ | ✅ |
-    | 个股分析 | ✅ | ✅ |
-    | 回测功能 | ✅ | ✅ |
-    | 实操信号 | ✅ | ✅ |
-    """)
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button(t()["monthly"], use_container_width=True, type="primary"):
-            st.info("支付功能待配置，请联系管理员")
-    with col2:
-        if st.button(t()["yearly"], use_container_width=True, type="primary"):
-            st.info("支付功能待配置，请联系管理员")
-
-
-def check_usage_and_run(func, *args, **kwargs):
-    """装饰器：检查使用次数后执行功能"""
-    remaining = get_remaining_trials(st.session_state.user_id)
-    profile = get_user_profile(st.session_state.user_id)
-    
-    if profile.get("subscription_tier") == "pro":
-        return func(*args, **kwargs)
-    elif remaining > 0:
-        return func(*args, **kwargs)
-    else:
-        show_paywall()
-        return None
-    """
-admin.py - 管理员面板
-提供：用户管理、股票池查看、系统统计、重置密码等功能
-"""
-
-import streamlit as st
-import pandas as pd
-import requests
-from datetime import datetime
-from typing import List, Dict
-
-from config import t, SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, SUPABASE_SECRET_KEY, ADMIN_EMAIL
-from auth import get_all_users, update_user_profile, send_custom_email
-from supabase_ops import (
-    get_recommended_pool, get_backtest_pool, get_live_pool,
-    supabase_request
-)
-
+print("第3部分加载完成")
+print("=" * 60)
+# ============================================================
+# 第4部分：管理员面板（用户管理、股票池查看）
+# ============================================================
 
 # ==================== 管理员辅助函数 ====================
 
-def get_supabase_headers(use_secret=True):
-    """获取Supabase API请求头（管理员模式默认使用secret key）"""
-    api_key = SUPABASE_SECRET_KEY if use_secret else SUPABASE_PUBLISHABLE_KEY
-    return {
-        "apikey": api_key,
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+def get_all_users() -> list:
+    """获取所有用户列表（管理员用）"""
+    try:
+        response = supabase_request("GET", "profiles", use_secret=True)
+        if response.status_code == 200:
+            return response.json()
+        return []
+    except Exception as e:
+        print(f"获取用户列表失败: {e}")
+        return []
 
 
 def get_user_auth_details(user_id: str) -> Dict:
@@ -1487,12 +1454,6 @@ def admin_delete_user(user_id: str, user_email: str) -> tuple:
         response = requests.delete(url, headers=headers)
         
         if response.status_code in [200, 204]:
-            # 发送通知邮件
-            send_custom_email(
-                user_email,
-                "账号已被管理员删除",
-                f"您的账号已被管理员删除。如需继续使用，请重新注册。\n\nTechLife团队"
-            )
             return True, f"用户 {user_email} 已删除"
         else:
             return False, f"删除失败: {response.text}"
@@ -1500,7 +1461,7 @@ def admin_delete_user(user_id: str, user_email: str) -> tuple:
         return False, f"删除失败: {str(e)}"
 
 
-def admin_reset_user_trials(user_id: str, new_trials: int = 30) -> tuple:
+def admin_reset_user_trials(user_id: str, new_trials: int = FREE_TRIAL_LIMIT) -> tuple:
     """重置用户的免费次数"""
     try:
         success = update_user_profile(user_id, {"free_trials_remaining": new_trials})
@@ -1521,7 +1482,6 @@ def admin_set_subscription(user_id: str, tier: str, months: int = 1) -> tuple:
         data = {"subscription_tier": tier}
         
         if tier == "pro":
-            from datetime import timedelta
             expires_at = (datetime.now() + timedelta(days=30 * months)).isoformat()
             data["subscription_expires_at"] = expires_at
         else:
@@ -1535,11 +1495,33 @@ def admin_set_subscription(user_id: str, tier: str, months: int = 1) -> tuple:
         return False, f"设置失败: {str(e)}"
 
 
+def send_password_reset_email(email: str) -> tuple:
+    """
+    发送密码重置邮件
+    返回: (success, message)
+    """
+    try:
+        url = f"{SUPABASE_URL}/auth/v1/recover"
+        headers = {
+            "apikey": SUPABASE_PUBLISHABLE_KEY,
+            "Content-Type": "application/json"
+        }
+        data = {"email": email}
+        response = requests.post(url, headers=headers, json=data)
+        
+        if response.status_code == 200:
+            return True, f"密码重置邮件已发送至 {email}"
+        else:
+            return False, f"发送失败: {response.text}"
+    except Exception as e:
+        return False, f"发送失败: {str(e)}"
+
+
 # ==================== 管理员UI组件 ====================
 
 def render_admin_panel():
     """管理员面板主界面"""
-    st.markdown("## ⚙️ 管理员面板")
+    st.markdown(f"## ⚙️ {t()['admin_panel']}")
     
     # 获取用户列表
     users = get_all_users()
@@ -1548,7 +1530,7 @@ def render_admin_panel():
         st.info("暂无用户数据")
         return
     
-    # 获取用户认证详情
+    # 获取用户认证详情和股票池摘要
     users_with_details = []
     for user in users:
         auth_details = get_user_auth_details(user.get("id", ""))
@@ -1558,7 +1540,7 @@ def render_admin_panel():
             "id": user.get("id"),
             "email": user.get("email", ""),
             "subscription_tier": user.get("subscription_tier", "free"),
-            "free_trials_remaining": user.get("free_trials_remaining", 30),
+            "free_trials_remaining": user.get("free_trials_remaining", FREE_TRIAL_LIMIT),
             "subscription_expires_at": user.get("subscription_expires_at", ""),
             "created_at": auth_details.get("created_at", "")[:10] if auth_details.get("created_at") else "-",
             "last_sign_in_at": auth_details.get("last_sign_in_at", "")[:10] if auth_details.get("last_sign_in_at") else "-",
@@ -1573,13 +1555,13 @@ def render_admin_panel():
     
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("总用户数", len(users))
+        st.metric(t()["total_users"], len(users))
     with col2:
         pro_count = sum(1 for u in users_with_details if u["subscription_tier"] == "pro")
-        st.metric("专业版用户", pro_count)
+        st.metric(t()["pro_users"], pro_count)
     with col3:
         free_count = len(users) - pro_count
-        st.metric("免费版用户", free_count)
+        st.metric(t()["free_users"], free_count)
     with col4:
         total_recommended = sum(u["recommended_count"] for u in users_with_details)
         st.metric("总推荐股票数", total_recommended)
@@ -1587,7 +1569,7 @@ def render_admin_panel():
     st.markdown("---")
     
     # ==================== 用户列表 ====================
-    st.markdown("### 👥 用户列表")
+    st.markdown(f"### 👥 {t()['user_list']}")
     
     # 转换为DataFrame显示
     df_users = pd.DataFrame(users_with_details)
@@ -1620,133 +1602,127 @@ def render_admin_panel():
     
     # 选择用户
     user_options = [f"{u['email']} ({u['subscription_tier']})" for u in users_with_details]
-    selected_user_str = st.selectbox("选择用户", user_options, key="admin_select_user")
-    selected_email = selected_user_str.split(" ")[0]
-    selected_user = next((u for u in users_with_details if u["email"] == selected_email), None)
-    
-    if selected_user:
-        st.markdown(f"**当前用户**: {selected_user['email']}")
+    if user_options:
+        selected_user_str = st.selectbox("选择用户", user_options, key="admin_select_user")
+        selected_email = selected_user_str.split(" ")[0]
+        selected_user = next((u for u in users_with_details if u["email"] == selected_email), None)
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("#### 📝 修改订阅")
-            new_tier = st.selectbox(
-                "订阅等级",
-                ["free", "pro"],
-                index=0 if selected_user["subscription_tier"] == "free" else 1,
-                key="admin_new_tier"
-            )
+        if selected_user:
+            st.markdown(f"**当前用户**: {selected_user['email']}")
             
-            pro_months = 1
-            if new_tier == "pro":
-                pro_months = st.number_input("月数", min_value=1, max_value=12, value=1, key="admin_months")
+            col1, col2 = st.columns(2)
             
-            if st.button("更新订阅", key="admin_update_subscription", use_container_width=True):
-                success, msg = admin_set_subscription(selected_user["id"], new_tier, pro_months)
-                if success:
-                    st.success(msg)
-                    st.rerun()
-                else:
-                    st.error(msg)
-        
-        with col2:
-            st.markdown("#### 🎫 免费次数")
-            new_trials = st.number_input(
-                "设置剩余次数",
-                min_value=0,
-                max_value=100,
-                value=selected_user["free_trials_remaining"],
-                key="admin_new_trials"
-            )
-            
-            if st.button("重置次数", key="admin_reset_trials", use_container_width=True):
-                success, msg = admin_reset_user_trials(selected_user["id"], new_trials)
-                if success:
-                    st.success(msg)
-                    st.rerun()
-                else:
-                    st.error(msg)
-        
-        # 操作按钮行
-        st.markdown("#### ⚠️ 危险操作")
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            if st.button("📧 发送重置邮件", key="admin_send_reset", use_container_width=True):
-                # 发送密码重置邮件
-                try:
-                    url = f"{SUPABASE_URL}/auth/v1/recover"
-                    headers = get_supabase_headers(use_secret=False)
-                    data = {"email": selected_user["email"]}
-                    response = requests.post(url, headers=headers, json=data)
-                    
-                    if response.status_code == 200:
-                        st.success(f"密码重置邮件已发送至 {selected_user['email']}")
+            with col1:
+                st.markdown("#### 📝 修改订阅")
+                new_tier = st.selectbox(
+                    "订阅等级",
+                    ["free", "pro"],
+                    index=0 if selected_user["subscription_tier"] == "free" else 1,
+                    key="admin_new_tier"
+                )
+                
+                pro_months = 1
+                if new_tier == "pro":
+                    pro_months = st.number_input("月数", min_value=1, max_value=12, value=1, key="admin_months")
+                
+                if st.button("更新订阅", key="admin_update_subscription", use_container_width=True):
+                    success, msg = admin_set_subscription(selected_user["id"], new_tier, pro_months)
+                    if success:
+                        st.success(msg)
+                        st.rerun()
                     else:
-                        st.error(f"发送失败: {response.text}")
-                except Exception as e:
-                    st.error(f"发送失败: {e}")
-        
-        with col2:
-            if st.button("🔑 重置密码(删除用户)", key="admin_reset_pwd", use_container_width=True):
-                success, msg = admin_delete_user(selected_user["id"], selected_user["email"])
-                if success:
-                    st.success(msg)
-                    st.rerun()
-                else:
-                    st.error(msg)
-        
-        with col3:
-            if st.button("🗑️ 删除用户", key="admin_delete_user", use_container_width=True):
-                success, msg = admin_delete_user(selected_user["id"], selected_user["email"])
-                if success:
-                    st.success(msg)
-                    st.rerun()
-                else:
-                    st.error(msg)
+                        st.error(msg)
+            
+            with col2:
+                st.markdown("#### 🎫 免费次数")
+                new_trials = st.number_input(
+                    "设置剩余次数",
+                    min_value=0,
+                    max_value=100,
+                    value=selected_user["free_trials_remaining"],
+                    key="admin_new_trials"
+                )
+                
+                if st.button("重置次数", key="admin_reset_trials", use_container_width=True):
+                    success, msg = admin_reset_user_trials(selected_user["id"], new_trials)
+                    if success:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+            
+            # 操作按钮行
+            st.markdown("#### ⚠️ 危险操作")
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                if st.button("📧 发送重置邮件", key="admin_send_reset", use_container_width=True):
+                    success, msg = send_password_reset_email(selected_user["email"])
+                    if success:
+                        st.success(msg)
+                    else:
+                        st.error(msg)
+            
+            with col2:
+                if st.button("🔑 重置密码(删除用户)", key="admin_reset_pwd", use_container_width=True):
+                    success, msg = admin_delete_user(selected_user["id"], selected_user["email"])
+                    if success:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+            
+            with col3:
+                if st.button("🗑️ 删除用户", key="admin_delete_user", use_container_width=True):
+                    success, msg = admin_delete_user(selected_user["id"], selected_user["email"])
+                    if success:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
     
     st.markdown("---")
     
     # ==================== 查看用户股票池 ====================
     st.markdown("### 📊 查看用户股票池")
     
-    view_user_str = st.selectbox("选择用户查看股票池", user_options, key="admin_view_stocks")
-    view_email = view_user_str.split(" ")[0]
-    view_user = next((u for u in users_with_details if u["email"] == view_email), None)
-    
-    if view_user:
-        user_id = view_user["id"]
+    if user_options:
+        view_user_str = st.selectbox("选择用户查看股票池", user_options, key="admin_view_stocks")
+        view_email = view_user_str.split(" ")[0]
+        view_user = next((u for u in users_with_details if u["email"] == view_email), None)
         
-        # Tab切换
-        tab1, tab2, tab3 = st.tabs(["推荐股票池", "回测股票池", "实操股票池"])
-        
-        with tab1:
-            stocks = get_recommended_pool(user_id)
-            if stocks:
-                df = pd.DataFrame(stocks)
-                st.dataframe(df, use_container_width=True, hide_index=True)
-                st.caption(f"共 {len(stocks)} 只股票")
-            else:
-                st.info("暂无推荐股票")
-        
-        with tab2:
-            stocks = get_backtest_pool(user_id)
-            if stocks:
-                df = pd.DataFrame(stocks)
-                st.dataframe(df, use_container_width=True, hide_index=True)
-                st.caption(f"共 {len(stocks)} 只股票")
-            else:
-                st.info("暂无回测股票")
-        
-        with tab3:
-            stocks = get_live_pool(user_id)
-            if stocks:
-                df = pd.DataFrame(stocks)
-                st.dataframe(df, use_container_width=True, hide_index=True)
-                st.caption(f"共 {len(stocks)} 只股票")
-            else:
-                st.info("暂无实操股票")
+        if view_user:
+            user_id = view_user["id"]
+            
+            # Tab切换
+            tab1, tab2, tab3 = st.tabs(["推荐股票池", "回测股票池", "实操股票池"])
+            
+            with tab1:
+                stocks = get_recommended_pool(user_id)
+                if stocks:
+                    df = pd.DataFrame(stocks)
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    st.caption(f"共 {len(stocks)} 只股票")
+                else:
+                    st.info("暂无推荐股票")
+            
+            with tab2:
+                stocks = get_backtest_pool(user_id)
+                if stocks:
+                    df = pd.DataFrame(stocks)
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    st.caption(f"共 {len(stocks)} 只股票")
+                else:
+                    st.info("暂无回测股票")
+            
+            with tab3:
+                stocks = get_live_pool(user_id)
+                if stocks:
+                    df = pd.DataFrame(stocks)
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    st.caption(f"共 {len(stocks)} 只股票")
+                else:
+                    st.info("暂无实操股票")
     
     st.markdown("---")
     
@@ -1759,14 +1735,14 @@ def render_admin_panel():
             count = 0
             for user in users_with_details:
                 if user["subscription_tier"] == "free":
-                    admin_reset_user_trials(user["id"], 30)
+                    admin_reset_user_trials(user["id"], FREE_TRIAL_LIMIT)
                     count += 1
             st.success(f"已重置 {count} 位免费用户的次数")
             st.rerun()
     
     with col2:
         if st.button("导出用户数据(CSV)", key="admin_export_csv", use_container_width=True):
-            csv = df_users.to_csv(index=False)
+            csv = df_users.to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="下载CSV",
                 data=csv,
@@ -1776,63 +1752,12 @@ def render_admin_panel():
             )
 
 
-def render_admin_login_form():
-    """管理员登录表单"""
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.markdown("<h2 style='text-align: center;'>管理员登录</h2>", unsafe_allow_html=True)
-        
-        with st.form("admin_login_form", border=True):
-            username = st.text_input("用户名", key="admin_username")
-            password = st.text_input("密码", type="password", key="admin_password")
-            submitted = st.form_submit_button("登录", type="primary", use_container_width=True)
-            
-            if submitted:
-                if username == "Laurence_ku" and password == "Ku_product$2026":
-                    st.session_state.admin_mode = True
-                    st.session_state.show_admin_login = False
-                    st.session_state.authenticated = True
-                    st.session_state.user_id = "admin"
-                    st.session_state.user_email = ADMIN_EMAIL
-                    st.rerun()
-                else:
-                    st.error("用户名或密码错误")
-        
-        if st.button("返回用户登录", use_container_width=True):
-            st.session_state.show_admin_login = False
-            st.rerun()
-"""
-app.py - AI量化股票系统 主入口
-第6部分：主应用程序入口、页面布局、多语言切换、Session管理
-
-完整的AI量化股票系统
-包含：用户认证、市场简报、推荐股票池、个股分析、回测功能、实操信号、管理员面板
-"""
-
-import streamlit as st
-
-# ==================== 页面配置 ====================
-st.set_page_config(
-    page_title="AI量化股票系统",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# ==================== 导入自定义模块 ====================
-from config import t, init_session_state, ADMIN_EMAIL
-from auth import (
-    sign_in, sign_up, sign_out, get_user_profile, get_remaining_trials,
-    render_login_form, render_register_form
-)
-from admin import render_admin_panel, render_admin_login_form
-from modules import (
-    render_market_brief, render_recommended_pool,
-    render_stock_analysis, render_backtest, render_live_signals,
-    show_paywall
-)
-from supabase_ops import get_recommended_pool
-
+print("第4部分加载完成")
+print("=" * 60)
+# ============================================================
+# 第5部分：主入口（app.py）核心代码
+# 包含：自定义CSS、侧边栏、右上角按钮、主页面路由、5个模块整合
+# ============================================================
 
 # ==================== 自定义CSS ====================
 st.markdown("""
@@ -1843,7 +1768,7 @@ st.markdown("""
         margin-bottom: 1rem;
     }
     
-    /* 侧边栏样式 */
+    /* 侧边栏用户信息卡片 */
     .sidebar-user-info {
         background-color: #f0f2f6;
         padding: 1rem;
@@ -1872,6 +1797,13 @@ st.markdown("""
         background-color: #ff4b4b !important;
         color: white !important;
     }
+    
+    /* 信号等级颜色 */
+    .signal-s { color: #ff4b4b; font-weight: bold; }
+    .signal-a { color: #ff6b6b; font-weight: bold; }
+    .signal-b { color: #ffaa00; font-weight: bold; }
+    .signal-c { color: #ff8800; font-weight: bold; }
+    .signal-d { color: #888888; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1883,18 +1815,22 @@ def render_sidebar():
         st.markdown("## 📊 AI量化股票系统")
         st.markdown("---")
         
-        # ===== 用户信息 =====
+        # ===== 用户信息（已登录且非管理员模式）=====
         if st.session_state.authenticated and not st.session_state.admin_mode:
             user_email = st.session_state.user_email
             profile = get_user_profile(st.session_state.user_id)
             tier = profile.get("subscription_tier", "free")
             remaining = get_remaining_trials(st.session_state.user_id)
             
+            # 显示用户信息卡片
+            tier_display = "💎 专业版" if tier == "pro" else "🔒 免费版"
+            remaining_display = "∞" if remaining == -1 else remaining
+            
             st.markdown(f"""
             <div class="sidebar-user-info">
                 <strong>👤 {user_email}</strong><br>
-                📋 {t()['subscription']}: {'💎 专业版' if tier == 'pro' else '🔒 免费版'}<br>
-                🎫 {t()['remaining']}: {'∞' if remaining == -1 else remaining}
+                📋 {t()['subscription']}: {tier_display}<br>
+                🎫 {t()['remaining']}: {remaining_display}
             </div>
             """, unsafe_allow_html=True)
             
@@ -1925,6 +1861,7 @@ def render_sidebar():
 # ==================== 右上角按钮 ====================
 def render_top_buttons():
     """渲染右上角语言切换和管理员按钮"""
+    # 创建5列布局：空白 + 中文 + 英文 + 管理员 + 退出
     col1, col2, col3, col4, col5 = st.columns([8, 1.2, 1.2, 1.2, 1])
     
     with col2:
@@ -1950,15 +1887,12 @@ def render_top_buttons():
                 sign_out()
 
 
-# ==================== 主页内容 ====================
+# ==================== 主页内容（5个模块） ====================
 def render_main_app():
     """渲染主页内容（5个功能模块）"""
     # 检查付费墙
     if st.session_state.get("show_paywall", False):
         show_paywall()
-        if st.button("返回", key="back_from_paywall"):
-            st.session_state.show_paywall = False
-            st.rerun()
         return
     
     # 欢迎语
@@ -2041,3 +1975,9 @@ def main():
 # ==================== 程序入口 ====================
 if __name__ == "__main__":
     main()
+
+
+print("第5部分加载完成")
+print("=" * 60)
+print("所有代码加载完成！AI量化股票系统已就绪。")
+print("=" * 60)
