@@ -2026,7 +2026,6 @@ def render_backtest():
         st.caption("⚠️ 回测结果基于历史数据，不代表未来表现")
 
 # ==================== 模块5：实操信号 ====================
-
 def render_live_signals():
     """实操信号模块（半自动交易）"""
     st.markdown(f"### {t()['module5_title']}")
@@ -2037,22 +2036,27 @@ def render_live_signals():
     col1, col2 = st.columns([4, 1])
     with col2:
         if st.button(t()["refresh"], key="refresh_signals", use_container_width=True):
-            if not consume_free_trial(st.session_state.user_id):
+            if not consume_free_trial(st.session_state.user_id, st.session_state.get("access_token")):
                 st.warning("免费次数已用完，请升级到专业版")
             else:
                 update_last_update_time("live_signals")
                 st.rerun()
     
-    # 获取推荐池数据（高评分股票生成信号）
-    recommended_stocks = get_recommended_pool(st.session_state.user_id)
-    live_stocks = get_live_pool(st.session_state.user_id)
+    # 获取推荐池数据
+    recommended_stocks = get_recommended_pool(st.session_state.user_id, st.session_state.get("access_token"))
+    live_stocks = get_live_pool(st.session_state.user_id, st.session_state.get("access_token"))
     
-    # 生成交易信号
     signals = []
     
     # 从推荐池获取高评分股票
     for stock in recommended_stocks[:5]:
         score = stock.get('current_score', 0)
+        # 修复：确保 score 是数字类型
+        try:
+            score = float(score) if score else 0
+        except (ValueError, TypeError):
+            score = 0
+        
         if score >= 70:
             signals.append({
                 "stock_code": stock['stock_code'],
@@ -2067,6 +2071,13 @@ def render_live_signals():
     for stock in live_stocks:
         current_price = stock.get('current_price', 0)
         avg_cost = stock.get('avg_cost', 0)
+        try:
+            current_price = float(current_price) if current_price else 0
+            avg_cost = float(avg_cost) if avg_cost else 0
+        except (ValueError, TypeError):
+            current_price = 0
+            avg_cost = 0
+        
         if avg_cost > 0 and current_price > 0:
             profit_pct = (current_price - avg_cost) / avg_cost * 100
             if profit_pct > 10:
@@ -2090,7 +2101,6 @@ def render_live_signals():
         st.info("暂无交易信号，请先在推荐池添加高评分股票")
         return
     
-    # 显示信号表格
     signals_df = pd.DataFrame(signals)
     st.dataframe(
         signals_df,
@@ -2105,10 +2115,9 @@ def render_live_signals():
         }
     )
     
-    # 升级提示
-    profile = get_user_profile(st.session_state.user_id)
+    profile = get_user_profile(st.session_state.user_id, st.session_state.get("access_token"))
     if profile.get("subscription_tier") == "free":
-        remaining = get_remaining_trials(st.session_state.user_id)
+        remaining = get_remaining_trials(st.session_state.user_id, st.session_state.get("access_token"))
         st.info(f"📋 免费用户每次刷新消耗1次，剩余{remaining}次。升级专业版后无限使用。")
     
     st.markdown("---")
