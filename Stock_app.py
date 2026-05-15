@@ -418,32 +418,40 @@ load_stock_name_cache()
 print("第1部分加载完成")
 print("=" * 60)
 # ============================================================
-# 第2部分：用户认证 + Supabase API封装 + 股票池操作 + 剩余次数扣减
+# ============================================================
+# 第2部分：管理员页面 + 登录验证 + 用户认证 + Supabase API封装
+# 修复：添加 access_token 支持，解决 RLS 认证问题
 # ============================================================
 
 # ==================== Supabase API 封装 ====================
 
-def get_supabase_headers(use_secret=False):
+def get_supabase_headers(use_secret=False, access_token=None):
     """
     获取Supabase API请求头
-    use_secret: True=使用secret key（管理员操作），False=使用publishable key（普通用户）
+    use_secret: True=使用secret key（管理员操作）
+    access_token: 用户登录后的JWT token（普通用户操作）
     """
     if use_secret:
         api_key = SUPABASE_SECRET_KEY
+        auth = f"Bearer {SUPABASE_SECRET_KEY}"
+    elif access_token:
+        api_key = SUPABASE_PUBLISHABLE_KEY
+        auth = f"Bearer {access_token}"
     else:
         api_key = SUPABASE_PUBLISHABLE_KEY
+        auth = f"Bearer {SUPABASE_PUBLISHABLE_KEY}"
     
     return {
         "apikey": api_key,
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": auth,
         "Content-Type": "application/json"
     }
 
 
-def supabase_request(method: str, endpoint: str, data=None, params=None, use_secret=False):
+def supabase_request(method: str, endpoint: str, data=None, params=None, use_secret=False, access_token=None):
     """通用的Supabase REST API请求"""
     url = f"{SUPABASE_URL}/rest/v1/{endpoint}"
-    headers = get_supabase_headers(use_secret)
+    headers = get_supabase_headers(use_secret, access_token)
     
     if params:
         url += f"?{params}"
@@ -510,7 +518,7 @@ def sign_up(email: str, password: str) -> tuple:
 def sign_in(email: str, password: str) -> tuple:
     """
     用户登录
-    返回: (success, message, user_id, user_email)
+    返回: (success, message, user_id, user_email, access_token)
     """
     try:
         url = f"{SUPABASE_URL}/auth/v1/token?grant_type=password"
@@ -528,6 +536,7 @@ def sign_in(email: str, password: str) -> tuple:
             data = response.json()
             user_id = data.get("user", {}).get("id")
             user_email = data.get("user", {}).get("email")
+            access_token = data.get("access_token")
             
             # 更新最后登录时间
             if user_id:
@@ -535,11 +544,11 @@ def sign_in(email: str, password: str) -> tuple:
                                 {"last_sign_in_at": datetime.now().isoformat()}, 
                                 use_secret=True)
             
-            return True, "登录成功", user_id, user_email
+            return True, "登录成功", user_id, user_email, access_token
         else:
-            return False, "邮箱或密码错误", None, None
+            return False, "邮箱或密码错误", None, None, None
     except Exception as e:
-        return False, f"登录失败: {str(e)}", None, None
+        return False, f"登录失败: {str(e)}", None, None, None
 
 
 def sign_out():
@@ -547,6 +556,7 @@ def sign_out():
     st.session_state.authenticated = False
     st.session_state.user_id = None
     st.session_state.user_email = None
+    st.session_state.access_token = None
     st.session_state.admin_mode = False
     st.rerun()
 
@@ -564,7 +574,7 @@ def check_admin_login(username: str, password: str) -> bool:
 
 # ==================== 用户资料操作 ====================
 
-def get_user_profile(user_id: str) -> dict:
+def get_user_profile(user_id: str, access_token: str = None) -> dict:
     """获取用户资料（订阅等级、剩余次数等）"""
     if not user_id or user_id == "admin":
         return {
@@ -575,7 +585,7 @@ def get_user_profile(user_id: str) -> dict:
         }
     
     try:
-        response = supabase_request("GET", f"profiles?id=eq.{user_id}", use_secret=True)
+        response = supabase_request("GET", f"profiles?id=eq.{user_id}", use_secret=True, access_token=access_token)
         if response.status_code == 200 and response.json():
             data = response.json()[0]
             return {
@@ -595,43 +605,38 @@ def get_user_profile(user_id: str) -> dict:
     }
 
 
-def update_user_profile(user_id: str, data: dict) -> bool:
+def update_user_profile(user_id: str, data: dict, access_token: str = None) -> bool:
     """更新用户资料"""
     try:
-        response = supabase_request("PATCH", f"profiles?id=eq.{user_id}", data, use_secret=True)
+        response = supabase_request("PATCH", f"profiles?id=eq.{user_id}", data, use_secret=True, access_token=access_token)
         return response.status_code in [200, 204]
     except Exception:
         return False
 
 
-def get_remaining_trials(user_id: str) -> int:
+def get_remaining_trials(user_id: str, access_token: str = None) -> int:
     """获取剩余免费次数"""
-    profile = get_user_profile(user_id)
+    profile = get_user_profile(user_id, access_token)
     if profile.get("subscription_tier") == "pro":
-        return -1  # -1 表示无限
+        return -1
     return profile.get("free_trials_remaining", 0)
 
 
-def consume_free_trial(user_id: str) -> bool:
+def consume_free_trial(user_id: str, access_token: str = None) -> bool:
     """
     消耗一次免费次数
     返回: True=有次数可用，False=次数已用完
     """
-    profile = get_user_profile(user_id)
+    profile = get_user_profile(user_id, access_token)
     
-    # 专业版用户无限使用
     if profile.get("subscription_tier") == "pro":
         return True
     
     remaining = profile.get("free_trials_remaining", 0)
     
     if remaining > 0:
-        success = update_user_profile(user_id, {"free_trials_remaining": remaining - 1})
-        if success:
-            return True
-        else:
-            print(f"更新剩余次数失败: user_id={user_id}, remaining={remaining}")
-            return False
+        success = update_user_profile(user_id, {"free_trials_remaining": remaining - 1}, access_token)
+        return success
     else:
         st.session_state.show_paywall = True
         return False
@@ -639,7 +644,7 @@ def consume_free_trial(user_id: str) -> bool:
 
 # ==================== 股票池操作 ====================
 
-def get_recommended_pool(user_id: str) -> List[Dict]:
+def get_recommended_pool(user_id: str, access_token: str = None) -> List[Dict]:
     """获取用户的推荐股票池"""
     if not user_id or user_id == "admin":
         return []
@@ -648,7 +653,8 @@ def get_recommended_pool(user_id: str) -> List[Dict]:
         response = supabase_request(
             "GET", 
             "recommended_pool", 
-            params=f"user_id=eq.{user_id}&is_deleted=eq.false&order=current_score.desc"
+            params=f"user_id=eq.{user_id}&is_deleted=eq.false&order=current_score.desc",
+            access_token=access_token
         )
         if response.status_code == 200:
             return response.json()
@@ -659,17 +665,12 @@ def get_recommended_pool(user_id: str) -> List[Dict]:
 
 
 def add_to_recommended_pool(user_id: str, stock_code: str, stock_name: str, 
-                            source: str = "user", score: float = 0) -> tuple:
-    """
-    添加股票到推荐池
-    返回: (success, message)
-    """
-    # 检查数量限制
-    stocks = get_recommended_pool(user_id)
+                            source: str = "user", score: float = 0, access_token: str = None) -> tuple:
+    """添加股票到推荐池"""
+    stocks = get_recommended_pool(user_id, access_token)
     if len(stocks) >= MAX_RECOMMENDED_STOCKS:
         return False, f"推荐池已达上限（{MAX_RECOMMENDED_STOCKS}只），请先删除部分股票"
     
-    # 检查是否已存在
     for s in stocks:
         if s.get("stock_code") == stock_code:
             return False, f"{stock_code} 已在推荐池中"
@@ -685,7 +686,7 @@ def add_to_recommended_pool(user_id: str, stock_code: str, stock_name: str,
             "added_date": datetime.now().date().isoformat(),
             "is_deleted": False
         }
-        response = supabase_request("POST", "recommended_pool", data)
+        response = supabase_request("POST", "recommended_pool", data, access_token=access_token)
         if response.status_code in [200, 201]:
             return True, f"成功添加 {stock_code} ({stock_name})"
         return False, f"添加失败: {response.text}"
@@ -693,15 +694,16 @@ def add_to_recommended_pool(user_id: str, stock_code: str, stock_name: str,
         return False, f"添加失败: {str(e)}"
 
 
-def remove_from_recommended_pool(user_id: str, stock_code: str) -> tuple:
-    """从推荐池删除股票（软删除）"""
+def remove_from_recommended_pool(user_id: str, stock_code: str, access_token: str = None) -> tuple:
+    """从推荐池删除股票"""
     try:
         data = {"is_deleted": True}
         response = supabase_request(
             "PATCH", 
             "recommended_pool", 
             data=data,
-            params=f"user_id=eq.{user_id}&stock_code=eq.{stock_code}"
+            params=f"user_id=eq.{user_id}&stock_code=eq.{stock_code}",
+            access_token=access_token
         )
         if response.status_code in [200, 204]:
             return True, f"已删除 {stock_code}"
@@ -710,28 +712,17 @@ def remove_from_recommended_pool(user_id: str, stock_code: str) -> tuple:
         return False, f"删除失败: {str(e)}"
 
 
-def auto_recommend_top10(user_id: str) -> List[Dict]:
-    """
-    自动推荐Top10股票（基于技术指标评分）
-    从预置热点板块中获取成分股，计算评分，取前10名
-    返回: 推荐的股票列表
-    """
+def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
+    """自动推荐Top10股票"""
     if not TUSHARE_AVAILABLE:
         return []
     
     all_stocks = []
-    
-    # 收集所有板块成分股
     for sector_name, sector_info in HOT_SECTORS.items():
         for i, ts_code in enumerate(sector_info["stocks"]):
             stock_name = sector_info["names"][i] if i < len(sector_info["names"]) else ts_code
-            all_stocks.append({
-                "code": ts_code,
-                "name": stock_name,
-                "sector": sector_name
-            })
+            all_stocks.append({"code": ts_code, "name": stock_name, "sector": sector_name})
     
-    # 去重（可能有股票属于多个板块）
     seen = set()
     unique_stocks = []
     for stock in all_stocks:
@@ -739,50 +730,28 @@ def auto_recommend_top10(user_id: str) -> List[Dict]:
             seen.add(stock["code"])
             unique_stocks.append(stock)
     
-    # 批量计算得分
     scored_stocks = []
     for stock in unique_stocks:
-        # 调用评分函数（在第3部分实现）
-        try:
-            from stock_engine import get_stock_score
-            score_result = get_stock_score(stock["code"], stock["name"])
-            scored_stocks.append({
-                "code": stock["code"],
-                "name": stock["name"],
-                "score": score_result["total_score"],
-                "level": score_result["level"],
-                "action": score_result["action"],
-                "sector": stock["sector"]
-            })
-        except:
-            # 如果评分函数不可用，使用默认分数
-            scored_stocks.append({
-                "code": stock["code"],
-                "name": stock["name"],
-                "score": 50,
-                "level": "D",
-                "action": "观望",
-                "sector": stock["sector"]
-            })
+        score_result = get_stock_score(stock["code"], stock["name"])
+        scored_stocks.append({
+            "code": stock["code"],
+            "name": stock["name"],
+            "score": score_result["total_score"],
+            "level": score_result["level"],
+            "action": score_result["action"],
+            "sector": stock["sector"]
+        })
     
-    # 按得分排序，取前10
     scored_stocks.sort(key=lambda x: x["score"], reverse=True)
     top10 = scored_stocks[:10]
     
-    # 添加到推荐池
     for stock in top10:
-        add_to_recommended_pool(
-            user_id, 
-            stock["code"], 
-            stock["name"], 
-            source="ai", 
-            score=stock["score"]
-        )
+        add_to_recommended_pool(user_id, stock["code"], stock["name"], source="ai", score=stock["score"], access_token=access_token)
     
     return top10
 
 
-def get_backtest_pool(user_id: str) -> List[Dict]:
+def get_backtest_pool(user_id: str, access_token: str = None) -> List[Dict]:
     """获取用户的回测股票池"""
     if not user_id or user_id == "admin":
         return []
@@ -791,7 +760,8 @@ def get_backtest_pool(user_id: str) -> List[Dict]:
         response = supabase_request(
             "GET", 
             "backtest_pool", 
-            params=f"user_id=eq.{user_id}"
+            params=f"user_id=eq.{user_id}",
+            access_token=access_token
         )
         if response.status_code == 200:
             return response.json()
@@ -801,9 +771,9 @@ def get_backtest_pool(user_id: str) -> List[Dict]:
         return []
 
 
-def add_to_backtest_pool(user_id: str, stock_code: str, stock_name: str) -> tuple:
+def add_to_backtest_pool(user_id: str, stock_code: str, stock_name: str, access_token: str = None) -> tuple:
     """添加股票到回测池"""
-    stocks = get_backtest_pool(user_id)
+    stocks = get_backtest_pool(user_id, access_token)
     for s in stocks:
         if s.get("stock_code") == stock_code:
             return False, f"{stock_code} 已在回测池中"
@@ -818,7 +788,7 @@ def add_to_backtest_pool(user_id: str, stock_code: str, stock_name: str) -> tupl
             "added_date": datetime.now().date().isoformat(),
             "backtest_status": "pending"
         }
-        response = supabase_request("POST", "backtest_pool", data)
+        response = supabase_request("POST", "backtest_pool", data, access_token=access_token)
         if response.status_code in [200, 201]:
             return True, f"成功添加 {stock_code} ({stock_name})"
         return False, f"添加失败: {response.text}"
@@ -826,13 +796,14 @@ def add_to_backtest_pool(user_id: str, stock_code: str, stock_name: str) -> tupl
         return False, f"添加失败: {str(e)}"
 
 
-def remove_from_backtest_pool(user_id: str, stock_code: str) -> tuple:
+def remove_from_backtest_pool(user_id: str, stock_code: str, access_token: str = None) -> tuple:
     """从回测池删除股票"""
     try:
         response = supabase_request(
             "DELETE", 
             "backtest_pool",
-            params=f"user_id=eq.{user_id}&stock_code=eq.{stock_code}"
+            params=f"user_id=eq.{user_id}&stock_code=eq.{stock_code}",
+            access_token=access_token
         )
         if response.status_code in [200, 204]:
             return True, f"已删除 {stock_code}"
@@ -841,7 +812,7 @@ def remove_from_backtest_pool(user_id: str, stock_code: str) -> tuple:
         return False, f"删除失败: {str(e)}"
 
 
-def get_live_pool(user_id: str) -> List[Dict]:
+def get_live_pool(user_id: str, access_token: str = None) -> List[Dict]:
     """获取用户的实操股票池"""
     if not user_id or user_id == "admin":
         return []
@@ -850,7 +821,8 @@ def get_live_pool(user_id: str) -> List[Dict]:
         response = supabase_request(
             "GET", 
             "live_pool", 
-            params=f"user_id=eq.{user_id}"
+            params=f"user_id=eq.{user_id}",
+            access_token=access_token
         )
         if response.status_code == 200:
             return response.json()
@@ -860,9 +832,9 @@ def get_live_pool(user_id: str) -> List[Dict]:
         return []
 
 
-def add_to_live_pool(user_id: str, stock_code: str, stock_name: str, shares: int = 0, avg_cost: float = 0) -> tuple:
+def add_to_live_pool(user_id: str, stock_code: str, stock_name: str, shares: int = 0, avg_cost: float = 0, access_token: str = None) -> tuple:
     """添加股票到实操池"""
-    stocks = get_live_pool(user_id)
+    stocks = get_live_pool(user_id, access_token)
     for s in stocks:
         if s.get("stock_code") == stock_code:
             return False, f"{stock_code} 已在实操池中"
@@ -878,7 +850,7 @@ def add_to_live_pool(user_id: str, stock_code: str, stock_name: str, shares: int
             "shares": shares,
             "avg_cost": avg_cost
         }
-        response = supabase_request("POST", "live_pool", data)
+        response = supabase_request("POST", "live_pool", data, access_token=access_token)
         if response.status_code in [200, 201]:
             return True, f"成功添加 {stock_code} ({stock_name})"
         return False, f"添加失败: {response.text}"
@@ -886,13 +858,14 @@ def add_to_live_pool(user_id: str, stock_code: str, stock_name: str, shares: int
         return False, f"添加失败: {str(e)}"
 
 
-def remove_from_live_pool(user_id: str, stock_code: str) -> tuple:
-    """从实操池删除股票（平仓）"""
+def remove_from_live_pool(user_id: str, stock_code: str, access_token: str = None) -> tuple:
+    """从实操池删除股票"""
     try:
         response = supabase_request(
             "DELETE", 
             "live_pool",
-            params=f"user_id=eq.{user_id}&stock_code=eq.{stock_code}"
+            params=f"user_id=eq.{user_id}&stock_code=eq.{stock_code}",
+            access_token=access_token
         )
         if response.status_code in [200, 204]:
             return True, f"已删除 {stock_code}"
@@ -904,10 +877,7 @@ def remove_from_live_pool(user_id: str, stock_code: str) -> tuple:
 # ==================== 数据解析函数 ====================
 
 def parse_stock_code(code: str) -> Tuple[str, str]:
-    """
-    解析股票代码，返回 (market, formatted_code)
-    支持格式: 000001.SZ, 0700.HK, 600000.SH
-    """
+    """解析股票代码"""
     code = code.strip().upper()
     
     if code.endswith(".HK"):
@@ -921,10 +891,7 @@ def parse_stock_code(code: str) -> Tuple[str, str]:
 
 
 def validate_stock_code(code: str) -> Tuple[bool, str]:
-    """
-    验证股票代码是否有效
-    返回: (is_valid, message_or_formatted_code)
-    """
+    """验证股票代码是否有效"""
     market, formatted = parse_stock_code(code)
     
     if market in ["SZ", "SH"]:
@@ -961,12 +928,12 @@ def render_login_form():
                     st.warning("请填写邮箱和密码")
                 else:
                     with st.spinner("登录中..."):
-                        success, msg, user_id, user_email = sign_in(email, password)
+                        success, msg, user_id, user_email, access_token = sign_in(email, password)
                         if success:
                             st.session_state.authenticated = True
                             st.session_state.user_id = user_id
                             st.session_state.user_email = user_email
-                            # 清除可能存在的付费墙标志
+                            st.session_state.access_token = access_token
                             st.session_state.show_paywall = False
                             st.rerun()
                         else:
@@ -1043,7 +1010,7 @@ def render_admin_login_form():
             st.rerun()
 
 
-print("第2部分加载完成")
+print("第2部分加载完成（已修复access_token支持）")
 print("=" * 60)
 # ============================================================
 # 第3部分：评分引擎（技术指标计算、板块热度、个股评分）
@@ -2058,120 +2025,9 @@ def render_backtest():
         
         st.caption("⚠️ 回测结果基于历史数据，不代表未来表现")
 
-
-# ==================== 模块5：实操信号 + 掘金下单 ====================
-
-def render_live_signals():
-    """实操信号模块 + 掘金一键下单"""
-    st.markdown(f"### {t()['module5_title']}")
-    
-    last_update = get_last_update_time("live_signals")
-    st.caption(f"📅 最后更新: {last_update} | 💡 AI生成交易信号，掘金一键下单")
-    
-    col1, col2 = st.columns([4, 1])
-    with col2:
-        if st.button(t()["refresh"], key="refresh_signals", use_container_width=True):
-            if not consume_free_trial(st.session_state.user_id):
-                st.warning("免费次数已用完，请升级到专业版")
-            else:
-                update_last_update_time("live_signals")
-                st.rerun()
-    
-    recommended_stocks = get_recommended_pool(st.session_state.user_id)
-    live_stocks = get_live_pool(st.session_state.user_id)
-    
-    signals = []
-    
-    for stock in recommended_stocks[:5]:
-        score = stock.get('current_score', 0)
-        if score >= 70:
-            signals.append({
-                "stock_code": stock['stock_code'],
-                "stock_name": stock.get('stock_name', ''),
-                "score": score,
-                "action": "买入",
-                "suggested_position": "5-15%",
-                "confidence": f"{score:.0f}%"
-            })
-    
-    for stock in live_stocks:
-        current_price = stock.get('current_price', 0)
-        avg_cost = stock.get('avg_cost', 0)
-        if avg_cost > 0 and current_price > 0:
-            profit_pct = (current_price - avg_cost) / avg_cost * 100
-            if profit_pct > 10:
-                action = "卖出(获利)"
-            elif profit_pct < -8:
-                action = "止损⚠️"
-            else:
-                action = "持有"
-        else:
-            action = "持有"
-        
-        signals.append({
-            "stock_code": stock['stock_code'],
-            "stock_name": stock.get('stock_name', ''),
-            "action": action,
-            "suggested_position": f"{stock.get('shares', 0)}股",
-            "confidence": ""
-        })
-    
-    if not signals:
-        st.info("暂无交易信号，请先在推荐池添加高评分股票")
-        return
-    
-    for idx, signal in enumerate(signals):
-        with st.container(border=True):
-            col1, col2, col3, col4, col5 = st.columns([1.5, 1, 1.5, 1.5, 1.5])
-            
-            with col1:
-                st.markdown(f"**{signal['stock_code']}**")
-                st.caption(signal['stock_name'])
-            
-            with col2:
-                st.markdown(f"**{signal['action']}**")
-            
-            with col3:
-                st.caption(f"建议: {signal['suggested_position']}")
-            
-            with col4:
-                if signal.get('confidence'):
-                    st.caption(f"置信度: {signal['confidence']}")
-            
-            with col5:
-                if signal['action'] in ["买入", "卖出(获利)"] and GM_AVAILABLE:
-                    if st.button(f"🤖 下单", key=f"order_{signal['stock_code']}_{idx}", use_container_width=True):
-                        # 获取当前价格（简化：使用100元模拟）
-                        price = 100.0
-                        volume = 100
-                        side = "buy" if "买入" in signal['action'] else "sell"
-                        success, msg = place_gm_order(signal['stock_code'], volume, price, side)
-                        if success:
-                            st.success(msg)
-                        else:
-                            st.error(msg)
-    
-    profile = get_user_profile(st.session_state.user_id)
-    if profile.get("subscription_tier") == "free":
-        remaining = get_remaining_trials(st.session_state.user_id)
-        st.info(f"📋 免费用户每次刷新消耗1次，剩余{remaining}次。升级专业版后无限使用。")
-    
-    st.markdown("---")
-    st.markdown("### 📖 操作指引")
-    st.markdown("""
-    1. 查看上方交易信号
-    2. 点击[🤖 下单]按钮通过掘金自动下单
-    3. 或在券商App手动下单
-    4. 可在实操池中记录持仓
-    
-    ⚠️ 投资有风险，请谨慎决策
-    """)
-
-
-print("第4部分加载完成")
-print("=" * 60)
 # ============================================================
-# 第5部分：管理员面板 + 主入口 + 侧边栏 + 顶部按钮 + 页面路由
+# 第5部分：主入口 + 侧边栏 + 顶部按钮 + 页面路由
+# 修复：所有股票池操作函数调用时传入 access_token
 # ============================================================
 
 # ==================== 自定义CSS ====================
@@ -2256,9 +2112,11 @@ def get_user_auth_details(user_id: str) -> Dict:
 
 def get_user_stock_summary(user_id: str) -> Dict:
     """获取用户的股票池摘要"""
-    recommended = get_recommended_pool(user_id)
-    backtest = get_backtest_pool(user_id)
-    live = get_live_pool(user_id)
+    # 管理员模式下使用 secret key 获取数据
+    access_token = st.session_state.get("access_token") if not st.session_state.admin_mode else None
+    recommended = get_recommended_pool(user_id, access_token)
+    backtest = get_backtest_pool(user_id, access_token)
+    live = get_live_pool(user_id, access_token)
     
     return {
         "recommended_count": len(recommended),
@@ -2547,9 +2405,12 @@ def render_sidebar():
         
         if st.session_state.authenticated and not st.session_state.admin_mode:
             user_email = st.session_state.user_email
-            profile = get_user_profile(st.session_state.user_id)
+            user_id = st.session_state.user_id
+            access_token = st.session_state.get("access_token")
+            
+            profile = get_user_profile(user_id, access_token)
             tier = profile.get("subscription_tier", "free")
-            remaining = get_remaining_trials(st.session_state.user_id)
+            remaining = get_remaining_trials(user_id, access_token)
             
             tier_display = "💎 专业版" if tier == "pro" else "🔒 免费版"
             remaining_display = "∞" if remaining == -1 else remaining
@@ -2638,9 +2499,13 @@ def render_main_app():
     
     st.markdown(f"<h3 style='text-align: left;'>{t()['welcome']}, {st.session_state.user_email}</h3>", unsafe_allow_html=True)
     
-    profile = get_user_profile(st.session_state.user_id)
+    # 获取当前用户的 access_token
+    access_token = st.session_state.get("access_token")
+    user_id = st.session_state.user_id
+    
+    profile = get_user_profile(user_id, access_token)
     if profile.get("subscription_tier") == "free":
-        remaining = get_remaining_trials(st.session_state.user_id)
+        remaining = get_remaining_trials(user_id, access_token)
         st.caption(f"📋 剩余免费次数: {remaining} | 升级专业版后无限使用")
     
     st.markdown("---")
