@@ -928,6 +928,12 @@ def get_backtest_pool(user_id: str, access_token: str = None) -> List[Dict]:
 
 def add_to_backtest_pool(user_id: str, stock_code: str, stock_name: str, access_token: str = None) -> tuple:
     """添加股票到回测池"""
+    
+    # ===== 添加以下调试代码 =====
+    import streamlit as st
+    st.error(f"🔍 调试: 函数被调用 - user_id={user_id}, stock_code={stock_code}")
+    # ===========================
+    
     stocks = get_backtest_pool(user_id, access_token)
     for s in stocks:
         if s.get("stock_code") == stock_code:
@@ -943,11 +949,23 @@ def add_to_backtest_pool(user_id: str, stock_code: str, stock_name: str, access_
             "added_date": datetime.now().date().isoformat(),
             "backtest_status": "pending"
         }
+        
+        # ===== 添加更多调试 =====
+        st.error(f"🔍 调试: 准备插入数据 - {data}")
+        # =======================
+        
         response = supabase_request("POST", "backtest_pool", data, access_token=access_token)
+        
+        # ===== 添加响应调试 =====
+        st.error(f"🔍 调试: 响应状态码 = {response.status_code}")
+        st.error(f"🔍 调试: 响应内容 = {response.text}")
+        # =======================
+        
         if response.status_code in [200, 201]:
             return True, f"成功添加 {stock_code} ({stock_name})"
         return False, f"添加失败: {response.text}"
     except Exception as e:
+        st.error(f"🔍 调试: 异常 - {e}")
         return False, f"添加失败: {str(e)}"
 
 
