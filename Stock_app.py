@@ -2744,13 +2744,11 @@ def render_sidebar():
             
             # ===== 调试1：打印原始 profile =====
             profile = get_user_profile(user_id, access_token)
-            st.write(f"🔍 调试1 - profile = {profile}")
             
             tier = profile.get("subscription_tier", "free")
             remaining_raw = profile.get("free_trials_remaining", 0)
             
             # ===== 调试2：打印提取的值 =====
-            st.write(f"🔍 调试2 - tier={tier}, remaining_raw={remaining_raw}, type={type(remaining_raw)}")
             
             # 确保 remaining 是数字
             try:
@@ -2759,19 +2757,16 @@ def render_sidebar():
                 remaining = 0
             
             # ===== 调试3：打印转换后的值 =====
-            st.write(f"🔍 调试3 - remaining after conversion = {remaining}")
             
             # 检查剩余次数是否有效
             if remaining <= 0 and tier != "pro":
                 # ===== 调试4：打印警告 =====
-                st.write(f"🔍 调试4 - WARNING: remaining={remaining}, tier={tier}")
                 st.warning("⚠️ 调试信息：剩余次数为0或无效")
             
             tier_display = "💎 专业版" if tier == "pro" else "🔒 免费版"
             remaining_display = "∞" if tier == "pro" else str(remaining)
             
             # ===== 调试5：打印显示值 =====
-            st.write(f"🔍 调试5 - remaining_display = {remaining_display}")
             
             st.markdown(f"""
             <div class="sidebar-user-info">
