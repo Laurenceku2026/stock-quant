@@ -587,8 +587,25 @@ def sign_out():
 
 
 def admin_sign_out():
-    """管理员退出（返回到之前的登录状态）"""
+    """管理员退出，恢复原用户"""
+    # 恢复管理员登录前的用户状态
+    prev_user_id = st.session_state.get("admin_previous_user_id")
+    prev_user_email = st.session_state.get("admin_previous_user_email")
+    prev_access_token = st.session_state.get("admin_previous_access_token")
+    
+    if prev_user_id and prev_user_email:
+        st.session_state.authenticated = True
+        st.session_state.user_id = prev_user_id
+        st.session_state.user_email = prev_user_email
+        st.session_state.access_token = prev_access_token
+    else:
+        st.session_state.authenticated = False
+        st.session_state.user_id = None
+        st.session_state.user_email = None
+        st.session_state.access_token = None
+    
     st.session_state.admin_mode = False
+    # 不清除 admin_previous_*，下次管理员登录时会重新设置
     st.rerun()
 
 
