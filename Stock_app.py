@@ -10,6 +10,7 @@ AI量化股票系统 - 完整版本 v3.0
 - 掘金手动下单集成
 - Stripe支付集成（生成链接用户手动点击）
 - 预置热点板块（含机器人板块）
+- 股票名称缓存到Supabase（解决Tushare频率超限）
 
 部署方式：
 1. 将代码上传到GitHub
@@ -320,6 +321,8 @@ def init_session_state():
         st.session_state.market = "A股"
     if "last_update_time" not in st.session_state:
         st.session_state.last_update_time = {}
+    if "stock_cache_loaded" not in st.session_state:
+        st.session_state.stock_cache_loaded = False
 
 
 # ==================== 工具函数 ====================
@@ -359,32 +362,101 @@ def init_tushare():
         print(f"❌ Tushare 初始化失败: {e}")
 
 
+# ==================== 股票名称缓存（从Supabase读取） ====================
+
+def sync_stock_basic_to_db():
+    """
+    从Tushare同步股票列表到Supabase
+    只需要运行一次，或每周运行一次更新
+    """
+    if not TUSHARE_AVAILABLE:
+        print("Tushare不可用，无法同步")
+        return False
+    
+    try:
+        # 从Tushare获取股票列表
+        df = TUSHARE_PRO.stock_basic(exchange='', list_status='L', fields='ts_code,name,symbol')
+        
+        if df is None or df.empty:
+            print("获取股票列表失败")
+            return False
+        
+        # 准备数据
+        records = []
+        for _, row in df.iterrows():
+            records.append({
+                "ts_code": row['ts_code'],
+                "name": row['name'],
+                "symbol": row.get('symbol', row['ts_code'].split('.')[0]),
+                "updated_at": datetime.now().isoformat()
+            })
+        
+        # 批量插入/更新到Supabase
+        headers = {
+            "apikey": SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
+            "Content-Type": "application/json"
+        }
+        url = f"{SUPABASE_URL}/rest/v1/stock_basic_cache"
+        
+        # 先清空旧数据
+        requests.delete(url, headers=headers)
+        
+        # 批量插入
+        for record in records:
+            requests.post(url, headers=headers, json=record)
+        
+        print(f"✅ 成功同步 {len(records)} 只股票到数据库")
+        return True
+        
+    except Exception as e:
+        print(f"同步股票列表失败: {e}")
+        return False
+
+
 def load_stock_name_cache() -> Dict[str, str]:
     """
-    加载股票名称缓存（从Tushare获取全量A股名称）
-    返回: { "000001.SZ": "平安银行", ... }
+    从Supabase加载股票名称缓存
+    优先从数据库读取，如果数据库为空则从Tushare同步
     """
     global STOCK_NAME_CACHE
     
     if STOCK_NAME_CACHE:
         return STOCK_NAME_CACHE
     
-    if not TUSHARE_AVAILABLE or TUSHARE_PRO is None:
-        return {}
-    
     try:
-        df = TUSHARE_PRO.stock_basic(exchange='', list_status='L', fields='ts_code,name')
-        for _, row in df.iterrows():
-            STOCK_NAME_CACHE[row['ts_code']] = row['name']
-        print(f"✅ 加载股票名称缓存成功，共{len(STOCK_NAME_CACHE)}只")
+        # 先从数据库读取
+        headers = {
+            "apikey": SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
+            "Content-Type": "application/json"
+        }
+        url = f"{SUPABASE_URL}/rest/v1/stock_basic_cache"
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code == 200 and response.json():
+            data = response.json()
+            for row in data:
+                STOCK_NAME_CACHE[row['ts_code']] = row['name']
+            print(f"✅ 从数据库加载股票名称缓存成功，共{len(STOCK_NAME_CACHE)}只")
+            return STOCK_NAME_CACHE
+        
     except Exception as e:
-        print(f"❌ 加载股票名称缓存失败: {e}")
+        print(f"从数据库读取缓存失败: {e}")
+    
+    # 数据库为空，尝试从Tushare同步
+    if TUSHARE_AVAILABLE:
+        print("数据库缓存为空，正在从Tushare同步...")
+        if sync_stock_basic_to_db():
+            # 同步成功后递归调用自己
+            return load_stock_name_cache()
     
     return STOCK_NAME_CACHE
 
 
-def get_stock_name(ts_code: str) -> str:
+def get_stock_name_from_tushare(ts_code: str) -> str:
     """根据股票代码获取名称"""
+    global STOCK_NAME_CACHE
     if not STOCK_NAME_CACHE:
         load_stock_name_cache()
     return STOCK_NAME_CACHE.get(ts_code, ts_code.split('.')[0])
@@ -413,11 +485,9 @@ def init_gm():
 # 执行初始化
 init_tushare()
 init_gm()
-load_stock_name_cache()
 
 print("第1部分加载完成")
 print("=" * 60)
-# ============================================================
 # ============================================================
 # 第2部分：用户认证 + Supabase API封装 + 股票池操作 + 次数扣减 + Stripe支付
 # 修复内容：
@@ -2346,12 +2416,14 @@ def render_live_signals():
 print("第4部分加载完成")
 print("=" * 60)
 # ============================================================
-# 第5部分：主入口 + 侧边栏 + 顶部按钮 + 页面路由 + 性能优化
+# ============================================================
+# 第5部分：主入口 + 侧边栏 + 顶部按钮 + 页面路由 + 管理员面板
 # 修复内容：
 # - 侧边栏只显示用户名（不显示邮箱后缀）
 # - 管理员退出后返回原登录状态
 # - 添加缓存机制优化性能
-# - 添加页面加载缓存
+# - 添加股票名称缓存加载（解决Tushare频率超限）
+# - 管理员面板添加股票列表同步按钮
 # ============================================================
 
 # ==================== 自定义CSS ====================
@@ -2418,12 +2490,6 @@ def get_cached_sector_performance():
     return get_sector_performance()
 
 
-@st.cache_data(ttl=86400)  # 缓存24小时
-def get_cached_stock_name_cache():
-    """缓存股票名称映射表"""
-    return load_stock_name_cache()
-
-
 # ==================== 管理员辅助函数 ====================
 
 def get_all_users() -> list:
@@ -2483,7 +2549,7 @@ def admin_delete_user(user_id: str, user_email: str) -> tuple:
         
         if response.status_code in [200, 204]:
             # 同时删除 user_settings
-            settings_url = f"{SUPABASE_URL}/rest/v1/user_settings?id=eq.{user_id}"
+            settings_url = f"{SUPABASE_URL}/rest/v1/user_settings?user_id=eq.{user_id}"
             requests.delete(settings_url, headers=headers)
             return True, f"用户 {user_email} 已删除"
         else:
@@ -2742,6 +2808,26 @@ def render_admin_panel():
                               mime="text/csv", key="admin_download_csv")
     
     st.markdown("---")
+    
+    # 数据管理（股票列表同步）
+    st.markdown("### 📊 数据管理")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔄 同步股票列表", key="sync_stocks", use_container_width=True):
+            with st.spinner("正在同步股票列表（可能需要1分钟）..."):
+                # 清除现有缓存
+                global STOCK_NAME_CACHE
+                STOCK_NAME_CACHE = {}
+                # 执行同步
+                if sync_stock_basic_to_db():
+                    st.success("✅ 股票列表同步成功！")
+                    st.session_state.stock_cache_loaded = False
+                    st.rerun()
+                else:
+                    st.error("❌ 同步失败，请检查Tushare连接")
+    
+    st.markdown("---")
+    
     if st.button("退出管理员模式", use_container_width=True):
         # 恢复管理员登录前的用户状态
         prev_user_id = st.session_state.get("admin_previous_user_id")
@@ -2781,31 +2867,21 @@ def render_sidebar():
             user_id = st.session_state.user_id
             access_token = st.session_state.get("access_token")
             
-            # ===== 调试1：打印原始 profile =====
+            # 直接从 get_user_profile 获取最新数据
             profile = get_user_profile(user_id, access_token)
             
+            # 从 profile 中直接获取值
             tier = profile.get("subscription_tier", "free")
-            remaining_raw = profile.get("free_trials_remaining", 0)
-            
-            # ===== 调试2：打印提取的值 =====
+            remaining = profile.get("free_trials_remaining", 0)
             
             # 确保 remaining 是数字
             try:
-                remaining = int(remaining_raw) if remaining_raw else 0
+                remaining = int(remaining) if remaining else 0
             except (ValueError, TypeError):
                 remaining = 0
             
-            # ===== 调试3：打印转换后的值 =====
-            
-            # 检查剩余次数是否有效
-            if remaining <= 0 and tier != "pro":
-                # ===== 调试4：打印警告 =====
-                st.warning("⚠️ 调试信息：剩余次数为0或无效")
-            
             tier_display = "💎 专业版" if tier == "pro" else "🔒 免费版"
-            remaining_display = "∞" if tier == "pro" else str(remaining)
-            
-            # ===== 调试5：打印显示值 =====
+            remaining_display = "∞" if remaining == -1 else str(remaining)
             
             st.markdown(f"""
             <div class="sidebar-user-info">
@@ -2843,6 +2919,7 @@ def render_sidebar():
         st.markdown("---")
         st.caption("v3.0 | TechLife")
         st.caption("数据: Tushare | 交易: 掘金 | 支付: Stripe")
+
 
 # ==================== 右上角按钮 ====================
 
@@ -2906,9 +2983,10 @@ def render_main_app():
     
     # 使用缓存获取数据（提升性能）
     with st.spinner("加载数据中..."):
-        # 预加载缓存数据
-        if TUSHARE_AVAILABLE:
-            get_cached_stock_name_cache()
+        # 预加载缓存数据（只预加载，不强制同步）
+        if TUSHARE_AVAILABLE and not STOCK_NAME_CACHE:
+            # 尝试从数据库加载缓存，但不强制同步（避免频率超限）
+            load_stock_name_cache()
     
     # 模块1：市场简报
     with st.container():
@@ -2945,6 +3023,13 @@ def main():
     
     init_session_state()
     
+    # ===== 只在首次加载时同步股票名称（解决Tushare频率超限）=====
+    if not st.session_state.get("stock_cache_loaded", False):
+        with st.spinner("加载股票数据..."):
+            load_stock_name_cache()
+            st.session_state.stock_cache_loaded = True
+    # ===========================================================
+    
     render_sidebar()
     render_top_buttons()
     
@@ -2971,4 +3056,6 @@ if __name__ == "__main__":
 
 
 print("第5部分加载完成")
+print("=" * 60)
+print("所有代码加载完成！AI量化股票系统 v3.0 已就绪。")
 print("=" * 60)
