@@ -630,9 +630,10 @@ def get_user_profile(user_id: str, access_token: str = None) -> dict:
         }
     
     try:
-        # 使用 secret key 确保能读取数据
         headers = get_supabase_headers(use_secret=True)
-        url = f"{SUPABASE_URL}/rest/v1/user_settings?id=eq.{user_id}"
+        # ========== 修改这里：id 改为 user_id ==========
+        url = f"{SUPABASE_URL}/rest/v1/user_settings?user_id=eq.{user_id}"
+        # ===========================================
         
         print(f"🔍 [get_user_profile] URL: {url}")
         
@@ -653,7 +654,6 @@ def get_user_profile(user_id: str, access_token: str = None) -> dict:
             return result
         else:
             print(f"🔍 [get_user_profile] 无数据，尝试创建...")
-            # 如果 user_settings 中没有记录，创建一条
             email = st.session_state.user_email if hasattr(st.session_state, 'user_email') else "unknown"
             settings_data = {
                 "user_id": user_id,
@@ -681,23 +681,19 @@ def get_user_profile(user_id: str, access_token: str = None) -> dict:
         "subscription_expires_at": None,
         "last_sign_in_at": None
     }
+
 def update_user_profile(user_id: str, data: dict, access_token: str = None) -> bool:
-    """更新用户资料"""
+    """更新用户资料（更新 user_settings 表）"""
     try:
         headers = get_supabase_headers(use_secret=True)
-        url = f"{SUPABASE_URL}/rest/v1/user_settings?id=eq.{user_id}"
-        
-        st.write(f"🔍 调试 - 更新URL: {url}")
-        st.write(f"🔍 调试 - 更新数据: {data}")
+        # ========== 修改这里：id 改为 user_id ==========
+        url = f"{SUPABASE_URL}/rest/v1/user_settings?user_id=eq.{user_id}"
+        # ===========================================
         
         response = requests.patch(url, headers=headers, json=data)
-        
-        st.write(f"🔍 调试 - 更新状态码: {response.status_code}")
-        st.write(f"🔍 调试 - 更新响应: {response.text}")
-        
         return response.status_code in [200, 204]
     except Exception as e:
-        st.error(f"更新失败: {e}")
+        print(f"更新用户资料失败: {e}")
         return False
 
 def get_remaining_trials(user_id: str, access_token: str = None) -> int:
