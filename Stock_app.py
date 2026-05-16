@@ -617,9 +617,7 @@ def check_admin_login(username: str, password: str) -> bool:
 # ==================== 用户资料操作 ====================
 
 def get_user_profile(user_id: str, access_token: str = None) -> dict:
-    """获取用户资料（从 user_settings 表读取）"""
-        
-    if not user_id or user_id == "admin":        
+    if not user_id or user_id == "admin":
         return {
             "subscription_tier": "free",
             "free_trials_remaining": FREE_TRIAL_LIMIT,
@@ -629,22 +627,18 @@ def get_user_profile(user_id: str, access_token: str = None) -> dict:
     
     try:
         headers = get_supabase_headers(use_secret=True)
-        # ========== 修改这里：id 改为 user_id ==========
         url = f"{SUPABASE_URL}/rest/v1/user_settings?user_id=eq.{user_id}"
-        # ===========================================
-                       
         response = requests.get(url, headers=headers)
-                
+        
         if response.status_code == 200 and response.json():
             data = response.json()[0]
-            result = {
+            return {
                 "subscription_tier": data.get("subscription_tier", "free"),
                 "free_trials_remaining": data.get("free_trials_remaining", FREE_TRIAL_LIMIT),
                 "subscription_expires_at": data.get("subscription_expires_at"),
                 "last_sign_in_at": data.get("last_sign_in_at")
-            }            
-            return result
-        else:            
+            }
+        else:
             email = st.session_state.user_email if hasattr(st.session_state, 'user_email') else "unknown"
             settings_data = {
                 "user_id": user_id,
@@ -654,21 +648,20 @@ def get_user_profile(user_id: str, access_token: str = None) -> dict:
                 "created_at": datetime.now().isoformat()
             }
             insert_url = f"{SUPABASE_URL}/rest/v1/user_settings"
-            insert_response = requests.post(insert_url, headers=headers, json=settings_data)
-                        
+            requests.post(insert_url, headers=headers, json=settings_data)
             return {
                 "subscription_tier": "free",
                 "free_trials_remaining": FREE_TRIAL_LIMIT,
                 "subscription_expires_at": None,
                 "last_sign_in_at": None
             }
-    except Exception as e:           
-    return {
-        "subscription_tier": "free",
-        "free_trials_remaining": FREE_TRIAL_LIMIT,
-        "subscription_expires_at": None,
-        "last_sign_in_at": None
-    }
+    except Exception:
+        return {
+            "subscription_tier": "free",
+            "free_trials_remaining": FREE_TRIAL_LIMIT,
+            "subscription_expires_at": None,
+            "last_sign_in_at": None
+        }
 
 def update_user_profile(user_id: str, data: dict, access_token: str = None) -> bool:
     """更新用户资料（更新 user_settings 表）"""
