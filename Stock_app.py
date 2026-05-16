@@ -618,10 +618,8 @@ def check_admin_login(username: str, password: str) -> bool:
 
 def get_user_profile(user_id: str, access_token: str = None) -> dict:
     """获取用户资料（从 user_settings 表读取）"""
-    print(f"🔍 [get_user_profile] 开始 - user_id: {user_id}")
-    
-    if not user_id or user_id == "admin":
-        print(f"🔍 [get_user_profile] 管理员用户，返回默认值")
+        
+    if not user_id or user_id == "admin":        
         return {
             "subscription_tier": "free",
             "free_trials_remaining": FREE_TRIAL_LIMIT,
@@ -634,14 +632,9 @@ def get_user_profile(user_id: str, access_token: str = None) -> dict:
         # ========== 修改这里：id 改为 user_id ==========
         url = f"{SUPABASE_URL}/rest/v1/user_settings?user_id=eq.{user_id}"
         # ===========================================
-        
-        print(f"🔍 [get_user_profile] URL: {url}")
-        
+                       
         response = requests.get(url, headers=headers)
-        
-        print(f"🔍 [get_user_profile] 状态码: {response.status_code}")
-        print(f"🔍 [get_user_profile] 响应内容: {response.text}")
-        
+                
         if response.status_code == 200 and response.json():
             data = response.json()[0]
             result = {
@@ -649,11 +642,9 @@ def get_user_profile(user_id: str, access_token: str = None) -> dict:
                 "free_trials_remaining": data.get("free_trials_remaining", FREE_TRIAL_LIMIT),
                 "subscription_expires_at": data.get("subscription_expires_at"),
                 "last_sign_in_at": data.get("last_sign_in_at")
-            }
-            print(f"🔍 [get_user_profile] ✅ 成功获取: {result}")
+            }            
             return result
-        else:
-            print(f"🔍 [get_user_profile] 无数据，尝试创建...")
+        else:            
             email = st.session_state.user_email if hasattr(st.session_state, 'user_email') else "unknown"
             settings_data = {
                 "user_id": user_id,
@@ -664,17 +655,14 @@ def get_user_profile(user_id: str, access_token: str = None) -> dict:
             }
             insert_url = f"{SUPABASE_URL}/rest/v1/user_settings"
             insert_response = requests.post(insert_url, headers=headers, json=settings_data)
-            print(f"🔍 [get_user_profile] 创建结果: {insert_response.status_code}")
-            
+                        
             return {
                 "subscription_tier": "free",
                 "free_trials_remaining": FREE_TRIAL_LIMIT,
                 "subscription_expires_at": None,
                 "last_sign_in_at": None
             }
-    except Exception as e:
-        print(f"🔍 [get_user_profile] ❌ 异常: {e}")
-    
+    except Exception as e:           
     return {
         "subscription_tier": "free",
         "free_trials_remaining": FREE_TRIAL_LIMIT,
@@ -705,41 +693,23 @@ def get_remaining_trials(user_id: str, access_token: str = None) -> int:
 
 #========
 def consume_free_trial(user_id: str, access_token: str = None) -> bool:
-    """
-    消耗一次免费次数
-    返回: True=有次数可用，False=次数已用完
-    """
-    # 直接获取最新 profile
     profile = get_user_profile(user_id, access_token)
     
-    # 显示调试信息（临时）
-    st.write(f"🔍 调试 - profile: {profile}")
-    
-    # 专业版用户无限使用
     if profile.get("subscription_tier") == "pro":
         return True
     
-    # 获取剩余次数
     remaining = profile.get("free_trials_remaining", 0)
     try:
         remaining = int(remaining) if remaining else 0
     except (ValueError, TypeError):
         remaining = 0
     
-    st.write(f"🔍 调试 - remaining: {remaining}")
-    
     if remaining > 0:
-        # 更新数据库：剩余次数减1
         new_remaining = remaining - 1
         success = update_user_profile(user_id, {"free_trials_remaining": new_remaining}, access_token)
-        st.write(f"🔍 调试 - update success: {success}")
-        
-        if success:
-            st.success(f"✅ 刷新成功！剩余次数: {new_remaining}")
         return success
     else:
         st.session_state.show_paywall = True
-        st.warning("免费次数已用完，请升级到专业版")
         return False
 # ==================== 股票池操作 ====================
 
