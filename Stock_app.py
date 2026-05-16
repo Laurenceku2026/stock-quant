@@ -1822,30 +1822,343 @@ def show_paywall():
         st.session_state.show_paywall = False
         st.rerun()
 
+# ==================== 真实回测函数 ====================
 
-# ==================== 模拟回测函数 ====================
+def calculate_annual_return(total_return: float, days: int) -> float:
+    """
+    计算年化收益率
+    total_return: 总收益率（百分比）
+    days: 回测天数
+    """
+    if days <= 0:
+        return 0
+    years = days / 365
+    if years <= 0:
+        return total_return
+    return ((1 + total_return / 100) ** (1 / years) - 1) * 100
 
+
+def calculate_sharpe_ratio(returns: List[float], risk_free_rate: float = 0.025) -> float:
+    """
+    计算夏普比率
+    returns: 每日收益率列表
+    risk_free_rate: 无风险利率（年化2.5%）
+    """
+    if len(returns) < 2:
+        return 0
+    
+    returns_array = np.array(returns)
+    # 计算每日超额收益（年化无风险利率转为日化）
+    daily_rf = (1 + risk_free_rate) ** (1/365) - 1
+    excess_returns = returns_array - daily_rf
+    
+    if np.std(excess_returns) == 0:
+        return 0
+    
+    # 夏普比率 = 平均超额收益 / 标准差 * sqrt(252)
+    sharpe = (np.mean(excess_returns) / np.std(excess_returns)) * np.sqrt(252)
+    return round(sharpe, 2)
+
+
+def calculate_max_drawdown(values: List[float]) -> float:
+    """
+    计算最大回撤
+    values: 每日资产净值列表
+    """
+    if len(values) < 2:
+        return 0
+    
+    peak = values[0]
+    max_dd = 0
+    
+    for value in values:
+        if value > peak:
+            peak = value
+        dd = (peak - value) / peak * 100
+        if dd > max_dd:
+            max_dd = dd
+    
+    return round(max_dd, 2)
+
+
+def run_real_backtest(
+    stock_codes: List[str],
+    start_date: str,
+    end_date: str,
+    initial_capital: float = 100000,
+    buy_threshold: float = 70,
+    sell_threshold: float = 40,
+    position_pct: float = 100,
+    max_positions: int = 3
+) -> Dict:
+    """
+    真实回测函数
+    
+    参数:
+        stock_codes: 股票代码列表
+        start_date: 开始日期 (YYYYMMDD)
+        end_date: 结束日期 (YYYYMMDD)
+        initial_capital: 初始资金
+        buy_threshold: 买入阈值（综合得分 >= 此值时买入）
+        sell_threshold: 卖出阈值（综合得分 <= 此值时卖出）
+        position_pct: 单笔仓位百分比
+        max_positions: 最大持仓数量
+    
+    返回:
+        回测结果字典
+    """
+    if not stock_codes:
+        return {
+            "success": False,
+            "error": "回测池为空"
+        }
+    
+    try:
+        # 1. 获取所有股票的历史数据
+        stock_data = {}
+        for ts_code in stock_codes:
+            df = get_stock_daily(ts_code, days=500)  # 获取足够长的历史数据
+            if not df.empty:
+                stock_data[ts_code] = df
+        
+        if not stock_data:
+            return {
+                "success": False,
+                "error": "无法获取历史数据，请检查Tushare连接"
+            }
+        
+        # 2. 确定回测日期范围（取所有股票数据的最小最大日期）
+        all_dates = []
+        for df in stock_data.values():
+            all_dates.extend(df['date'].tolist())
+        all_dates = sorted(set(all_dates))
+        
+        if len(all_dates) < 10:
+            return {
+                "success": False,
+                "error": "历史数据不足，需要至少10个交易日"
+            }
+        
+        # 3. 过滤日期范围（如果指定了start_date/end_date）
+        start_datetime = datetime.strptime(start_date, '%Y%m%d') if start_date else None
+        end_datetime = datetime.strptime(end_date, '%Y%m%d') if end_date else None
+        
+        if start_datetime:
+            all_dates = [d for d in all_dates if d >= start_datetime]
+        if end_datetime:
+            all_dates = [d for d in all_dates if d <= end_datetime]
+        
+        if len(all_dates) < 10:
+            return {
+                "success": False,
+                "error": "指定日期范围内数据不足"
+            }
+        
+        # 4. 回测初始化
+        capital = initial_capital
+        positions = {}  # {ts_code: {"shares": 数量, "buy_price": 买入价, "buy_date": 买入日期}}
+        portfolio_values = []  # 每日资产净值
+        trade_logs = []  # 交易日志
+        daily_returns = []  # 每日收益率
+        
+        # 5. 逐日回测
+        for current_date in all_dates:
+            # 获取当日各股票的价格和评分
+            available_stocks = []
+            for ts_code, df in stock_data.items():
+                # 获取当日数据
+                day_data = df[df['date'] == current_date]
+                if day_data.empty:
+                    continue
+                
+                close_price = day_data['close'].iloc[0]
+                
+                # 获取截至当日的评分（使用当日及之前的数据）
+                df_until_date = df[df['date'] <= current_date]
+                if df_until_date.empty:
+                    score = 50  # 默认分数
+                else:
+                    tech_result = calculate_technical_score(df_until_date)
+                    score = tech_result["score"]
+                
+                available_stocks.append({
+                    "ts_code": ts_code,
+                    "price": close_price,
+                    "score": score,
+                    "name": get_stock_name_from_tushare(ts_code)
+                })
+            
+            # 按评分排序
+            available_stocks.sort(key=lambda x: x["score"], reverse=True)
+            
+            # 检查卖出条件
+            for ts_code in list(positions.keys()):
+                stock_info = next((s for s in available_stocks if s["ts_code"] == ts_code), None)
+                if stock_info:
+                    current_price = stock_info["price"]
+                    current_score = stock_info["score"]
+                    position = positions[ts_code]
+                    
+                    # 卖出条件：评分低于卖出阈值
+                    if current_score <= sell_threshold:
+                        # 卖出
+                        sell_value = position["shares"] * current_price
+                        capital += sell_value
+                        
+                        # 计算收益率
+                        profit_pct = (current_price - position["buy_price"]) / position["buy_price"] * 100
+                        
+                        trade_logs.append({
+                            "date": current_date.strftime("%Y-%m-%d") if hasattr(current_date, 'strftime') else str(current_date),
+                            "stock_code": ts_code,
+                            "stock_name": stock_info["name"],
+                            "action": "卖出",
+                            "price": round(current_price, 2),
+                            "shares": position["shares"],
+                            "amount": round(sell_value, 2),
+                            "profit_pct": round(profit_pct, 2)
+                        })
+                        
+                        del positions[ts_code]
+            
+            # 检查买入条件
+            if len(positions) < max_positions:
+                # 计算单笔可用资金
+                available_capital = capital * (position_pct / 100)
+                
+                for stock in available_stocks:
+                    if len(positions) >= max_positions:
+                        break
+                    
+                    # 检查是否已持仓
+                    if stock["ts_code"] in positions:
+                        continue
+                    
+                    # 买入条件：评分高于买入阈值
+                    if stock["score"] >= buy_threshold:
+                        # 买入
+                        shares = int(available_capital // stock["price"])
+                        if shares > 0:
+                            buy_value = shares * stock["price"]
+                            capital -= buy_value
+                            
+                            positions[stock["ts_code"]] = {
+                                "shares": shares,
+                                "buy_price": stock["price"],
+                                "buy_date": current_date
+                            }
+                            
+                            trade_logs.append({
+                                "date": current_date.strftime("%Y-%m-%d") if hasattr(current_date, 'strftime') else str(current_date),
+                                "stock_code": stock["ts_code"],
+                                "stock_name": stock["name"],
+                                "action": "买入",
+                                "price": round(stock["price"], 2),
+                                "shares": shares,
+                                "amount": round(buy_value, 2)
+                            })
+            
+            # 计算当日资产净值
+            portfolio_value = capital
+            for ts_code, position in positions.items():
+                stock_info = next((s for s in available_stocks if s["ts_code"] == ts_code), None)
+                if stock_info:
+                    portfolio_value += position["shares"] * stock_info["price"]
+            
+            portfolio_values.append(portfolio_value)
+        
+        # 6. 回测结束时平仓
+        if positions:
+            for ts_code, position in list(positions.items()):
+                stock_info = next((s for s in available_stocks if s["ts_code"] == ts_code), None)
+                if stock_info:
+                    sell_value = position["shares"] * stock_info["price"]
+                    capital += sell_value
+                    
+                    profit_pct = (stock_info["price"] - position["buy_price"]) / position["buy_price"] * 100
+                    
+                    trade_logs.append({
+                        "date": "回测结束",
+                        "stock_code": ts_code,
+                        "stock_name": stock_info["name"],
+                        "action": "平仓",
+                        "price": round(stock_info["price"], 2),
+                        "shares": position["shares"],
+                        "amount": round(sell_value, 2),
+                        "profit_pct": round(profit_pct, 2)
+                    })
+            
+            positions.clear()
+            # 最终资产净值
+            portfolio_values.append(capital)
+        
+        # 7. 计算回测指标
+        final_value = portfolio_values[-1] if portfolio_values else initial_capital
+        total_return = (final_value - initial_capital) / initial_capital * 100
+        
+        # 计算每日收益率
+        for i in range(1, len(portfolio_values)):
+            if portfolio_values[i-1] > 0:
+                daily_return = (portfolio_values[i] - portfolio_values[i-1]) / portfolio_values[i-1] * 100
+                daily_returns.append(daily_return)
+        
+        # 计算年化收益率
+        days = len(all_dates)
+        annual_return = calculate_annual_return(total_return, days)
+        
+        # 计算夏普比率
+        sharpe = calculate_sharpe_ratio(daily_returns)
+        
+        # 计算最大回撤
+        max_drawdown = calculate_max_drawdown(portfolio_values)
+        
+        # 计算胜率
+        win_trades = [t for t in trade_logs if t["action"] == "卖出" and t.get("profit_pct", 0) > 0]
+        loss_trades = [t for t in trade_logs if t["action"] == "卖出" and t.get("profit_pct", 0) <= 0]
+        win_rate = len(win_trades) / (len(win_trades) + len(loss_trades)) * 100 if (len(win_trades) + len(loss_trades)) > 0 else 0
+        
+        return {
+            "success": True,
+            "total_return": round(total_return, 2),
+            "annual_return": round(annual_return, 2),
+            "sharpe": sharpe,
+            "max_drawdown": max_drawdown,
+            "win_rate": round(win_rate, 2),
+            "total_trades": len([t for t in trade_logs if t["action"] in ["卖出", "平仓"]]),
+            "buy_trades": len([t for t in trade_logs if t["action"] == "买入"]),
+            "sell_trades": len([t for t in trade_logs if t["action"] in ["卖出", "平仓"]]),
+            "initial_capital": initial_capital,
+            "final_value": round(final_value, 2),
+            "days": days,
+            "trade_logs": trade_logs,
+            "portfolio_values": portfolio_values,
+            "dates": [d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d) for d in all_dates]
+        }
+        
+    except Exception as e:
+        print(f"回测失败: {e}")
+        return {
+            "success": False,
+            "error": f"回测失败: {str(e)}"
+        }
+
+
+# 保留原有的简化回测函数作为备用
 def run_backtest_simple(stock_codes: List[str]) -> Dict:
-    """
-    简化版回测函数
-    返回回测结果字典
-    """
+    """简化版回测函数（保留兼容性）"""
     import random
     random.seed(hash(tuple(stock_codes)) % 10000)
     
-    annual_return = random.uniform(-10, 35)
-    sharpe = random.uniform(0.5, 1.8)
-    max_drawdown = random.uniform(8, 28)
-    win_rate = random.uniform(45, 65)
-    
     return {
-        "annual_return": round(annual_return, 1),
-        "sharpe": round(sharpe, 2),
-        "max_drawdown": round(max_drawdown, 1),
-        "win_rate": round(win_rate, 1),
-        "total_trades": random.randint(10, 50)
+        "success": True,
+        "total_return": round(random.uniform(-10, 35), 2),
+        "annual_return": round(random.uniform(-10, 35), 2),
+        "sharpe": round(random.uniform(0.5, 1.8), 2),
+        "max_drawdown": round(random.uniform(8, 28), 2),
+        "win_rate": round(random.uniform(45, 65), 2),
+        "total_trades": random.randint(10, 50),
+        "trade_logs": []
     }
-
 
 print("第3部分加载完成")
 print("=" * 60)
