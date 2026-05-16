@@ -1113,20 +1113,16 @@ print("=" * 60)
 
 def get_stock_daily(ts_code: str, days: int = 120) -> pd.DataFrame:
     """获取股票日线数据"""
-    print(f"🔍 get_stock_daily 开始: {ts_code}, days={days}")
-    
+        
     if not TUSHARE_AVAILABLE or TUSHARE_PRO is None:
-        print(f"🔍 get_stock_daily - Tushare不可用")
         return pd.DataFrame()
     
     try:
         end_date = datetime.now().strftime("%Y%m%d")
         start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
         
-        print(f"🔍 get_stock_daily - 日期范围: {start_date} 到 {end_date}")
-        
+       
         df = TUSHARE_PRO.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
-        print(f"🔍 get_stock_daily - 返回行数: {len(df) if df is not None else 0}")
         
         if df is not None and len(df) > 0:
             df = df.sort_values('trade_date')
@@ -1137,7 +1133,6 @@ def get_stock_daily(ts_code: str, days: int = 120) -> pd.DataFrame:
             return df
         return pd.DataFrame()
     except Exception as e:
-        print(f"🔍 get_stock_daily - 异常: {e}")
         return pd.DataFrame()
 
 
@@ -1459,14 +1454,11 @@ def calculate_technical_score(df: pd.DataFrame) -> Dict:
 
 def get_stock_score(ts_code: str, stock_name: str = "") -> Dict:
     """获取个股综合评分"""
-    print(f"🔍 get_stock_score 开始: {ts_code}")
     
     # 获取日线数据
     df = get_stock_daily(ts_code, days=120)
-    print(f"🔍 get_stock_score - df shape: {df.shape if not df.empty else '空'}")
     
     if df.empty:
-        print(f"🔍 get_stock_score - 数据为空，返回默认值")
         total_score = 50
         level = "D"
         action = "观望"
@@ -1503,7 +1495,6 @@ def get_stock_score(ts_code: str, stock_name: str = "") -> Dict:
         "tech_details": tech_details,
         "reasons": generate_score_reasons(total_score)
     }
-    print(f"🔍 get_stock_score - 结果: {result}")
     return result
 
 
@@ -1907,8 +1898,10 @@ def render_recommended_pool():
 
 # ==================== 模块3：个股分析 ====================
 
+# ==================== 模块3：个股分析 ====================
+
 def render_stock_analysis():
-    """个股分析模块"""
+    """个股分析模块（K线图连续显示版）"""
     st.markdown(f"### {t()['module3_title']}")
     
     last_update = get_last_update_time("stock_analysis")
@@ -1941,9 +1934,7 @@ def render_stock_analysis():
     if st.session_state.get("analyze_code"):
         stock_code = st.session_state.analyze_code
         stock_name = st.session_state.get("analyze_name", "")
-        # ===== 添加调试信息 =====
-        st.write(f"🔍 调试: 正在分析 {stock_code}")
-    
+        
         with st.spinner("正在分析..."):
             # 使用缓存获取评分
             score_result = get_cached_stock_score(stock_code, stock_name)
@@ -1952,6 +1943,7 @@ def render_stock_analysis():
         level = score_result["level"]
         color = SIGNAL_LEVELS.get(level, {}).get("color", "#888888")
         
+        # 评分卡片
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("综合得分", f"{score_result['total_score']:.0f}")
@@ -1962,19 +1954,30 @@ def render_stock_analysis():
         with col4:
             st.metric("建议仓位", score_result["position"])
         
-        # K线图
+        # ========== K线图（连续显示版，无周末空白） ==========
         if not df.empty:
             st.markdown("**📈 K线走势图**")
             
+            # 确保数据按日期排序
+            df = df.sort_values('date').reset_index(drop=True)
+            
+            # 创建数值索引（连续的数字，不会有空白）
+            x_numeric = list(range(len(df)))
+            
+            # 生成日期标签（每隔N个点显示一个，避免拥挤）
+            tick_interval = max(1, len(df) // 10)  # 最多显示10个标签
+            tick_vals = list(range(0, len(df), tick_interval))
+            tick_text = [df['date'].iloc[i].strftime('%m/%d') if isinstance(df['date'].iloc[i], pd.Timestamp) 
+                        else str(df['date'].iloc[i]) for i in tick_vals]
+            
+            # 创建子图（K线图 + 成交量）
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
                                  vertical_spacing=0.05, 
                                  row_heights=[0.7, 0.3])
             
-            colors = ['red' if close >= open else 'green' 
-                      for close, open in zip(df['close'], df['open'])]
-            
+            # 添加K线图（使用数值索引）
             fig.add_trace(go.Candlestick(
-                x=df['date'],
+                x=x_numeric,
                 open=df['open'],
                 high=df['high'],
                 low=df['low'],
@@ -1984,19 +1987,39 @@ def render_stock_analysis():
                 decreasing_line_color='green'
             ), row=1, col=1)
             
+            # 计算涨跌颜色（用于成交量条）
+            colors = ['red' if close >= open else 'green' 
+                      for close, open in zip(df['close'], df['open'])]
+            
+            # 添加成交量图
             fig.add_trace(go.Bar(
-                x=df['date'],
+                x=x_numeric,
                 y=df['volume'],
                 name='成交量',
                 marker_color=colors
             ), row=2, col=1)
             
+            # 更新布局
             fig.update_layout(
                 height=500,
-                xaxis_rangeslider_visible=False,
-                showlegend=False
+                xaxis=dict(
+                    tickmode='array',
+                    tickvals=tick_vals,
+                    ticktext=tick_text,
+                    title_text='日期'
+                ),
+                xaxis2=dict(
+                    tickmode='array',
+                    tickvals=tick_vals,
+                    ticktext=tick_text,
+                    title_text='日期'
+                ),
+                showlegend=False,
+                margin=dict(l=40, r=40, t=40, b=40)
             )
-            fig.update_yaxes(title_text="价格", row=1, col=1)
+            
+            # 设置Y轴标题
+            fig.update_yaxes(title_text="价格 (元)", row=1, col=1)
             fig.update_yaxes(title_text="成交量", row=2, col=1)
             
             st.plotly_chart(fig, use_container_width=True)
@@ -2020,6 +2043,7 @@ def render_stock_analysis():
         )
         st.plotly_chart(fig, use_container_width=True)
         
+        # 技术指标详情
         with st.expander("📊 技术指标详情"):
             tech_details = score_result.get("tech_details", {})
             if tech_details:
@@ -2034,6 +2058,7 @@ def render_stock_analysis():
             else:
                 st.caption("暂无详细技术指标数据")
         
+        # AI投资建议
         with st.expander("💡 AI投资建议"):
             st.markdown(f"""
             **{score_result['stock_code']} ({score_result['stock_name']})**
@@ -2047,6 +2072,7 @@ def render_stock_analysis():
             ⚠️ 以上仅供参考，不构成投资建议。
             """)
         
+        # 添加到股票池按钮
         col1, col2 = st.columns(2)
         with col1:
             if st.button("➕ 添加到推荐池", use_container_width=True):
@@ -2070,10 +2096,10 @@ def render_stock_analysis():
                 else:
                     st.error(msg)
         
+        # 清除分析状态
         if st.button("清除", key="clear_analyze"):
             st.session_state.analyze_code = ""
             st.rerun()
-
 
 # ==================== 模块4：回测功能 ====================
 
