@@ -682,30 +682,22 @@ def get_user_profile(user_id: str, access_token: str = None) -> dict:
         "last_sign_in_at": None
     }
 def update_user_profile(user_id: str, data: dict, access_token: str = None) -> bool:
-    """更新用户资料（更新 user_settings 表）"""
+    """更新用户资料"""
     try:
-        print(f"🔍 [update_user_profile] 开始 - user_id: {user_id}, data: {data}")
-        
-        # 使用 secret key 确保有权限
         headers = get_supabase_headers(use_secret=True)
-        # 关键：更新 user_settings 表
         url = f"{SUPABASE_URL}/rest/v1/user_settings?id=eq.{user_id}"
         
-        print(f"🔍 [update_user_profile] URL: {url}")
+        st.write(f"🔍 调试 - 更新URL: {url}")
+        st.write(f"🔍 调试 - 更新数据: {data}")
         
         response = requests.patch(url, headers=headers, json=data)
         
-        print(f"🔍 [update_user_profile] 状态码: {response.status_code}")
-        print(f"🔍 [update_user_profile] 响应内容: {response.text}")
+        st.write(f"🔍 调试 - 更新状态码: {response.status_code}")
+        st.write(f"🔍 调试 - 更新响应: {response.text}")
         
-        if response.status_code in [200, 204]:
-            print(f"🔍 [update_user_profile] ✅ 更新成功")
-            return True
-        else:
-            print(f"🔍 [update_user_profile] ❌ 更新失败，状态码: {response.status_code}")
-            return False
+        return response.status_code in [200, 204]
     except Exception as e:
-        print(f"🔍 [update_user_profile] ❌ 异常: {e}")
+        st.error(f"更新失败: {e}")
         return False
 
 def get_remaining_trials(user_id: str, access_token: str = None) -> int:
@@ -721,51 +713,38 @@ def consume_free_trial(user_id: str, access_token: str = None) -> bool:
     消耗一次免费次数
     返回: True=有次数可用，False=次数已用完
     """
-    print(f"🔍 [consume_free_trial] 开始 - user_id: {user_id}")
-    
     # 直接获取最新 profile
     profile = get_user_profile(user_id, access_token)
-    print(f"🔍 [consume_free_trial] profile: {profile}")
+    
+    # 显示调试信息（临时）
+    st.write(f"🔍 调试 - profile: {profile}")
     
     # 专业版用户无限使用
     if profile.get("subscription_tier") == "pro":
-        print(f"🔍 [consume_free_trial] 专业版用户，无限使用")
         return True
     
     # 获取剩余次数
     remaining = profile.get("free_trials_remaining", 0)
-    print(f"🔍 [consume_free_trial] 原始remaining: {remaining}, 类型: {type(remaining)}")
-    
     try:
         remaining = int(remaining) if remaining else 0
     except (ValueError, TypeError):
         remaining = 0
     
-    print(f"🔍 [consume_free_trial] 转换后remaining: {remaining}")
+    st.write(f"🔍 调试 - remaining: {remaining}")
     
     if remaining > 0:
         # 更新数据库：剩余次数减1
         new_remaining = remaining - 1
-        print(f"🔍 [consume_free_trial] 尝试更新 - new_remaining: {new_remaining}")
-        
         success = update_user_profile(user_id, {"free_trials_remaining": new_remaining}, access_token)
-        print(f"🔍 [consume_free_trial] update_user_profile返回: {success}")
-        
-        # 验证是否真的更新了
-        verify_profile = get_user_profile(user_id, access_token)
-        print(f"🔍 [consume_free_trial] 验证 - 更新后profile: {verify_profile}")
+        st.write(f"🔍 调试 - update success: {success}")
         
         if success:
-            print(f"🔍 [consume_free_trial] ✅ 消耗成功，剩余次数: {new_remaining}")
-        else:
-            print(f"🔍 [consume_free_trial] ❌ 消耗失败")
-        
+            st.success(f"✅ 刷新成功！剩余次数: {new_remaining}")
         return success
     else:
-        print(f"🔍 [consume_free_trial] ❌ 次数已用完，显示付费墙")
         st.session_state.show_paywall = True
+        st.warning("免费次数已用完，请升级到专业版")
         return False
-
 # ==================== 股票池操作 ====================
 
 def get_recommended_pool(user_id: str, access_token: str = None) -> List[Dict]:
