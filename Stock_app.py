@@ -478,6 +478,7 @@ def sign_up(email: str, password: str) -> tuple:
     返回: (success, message, user_id)
     """
     try:
+        # 1. 注册用户到 Supabase Auth
         url = f"{SUPABASE_URL}/auth/v1/signup"
         headers = {
             "apikey": SUPABASE_PUBLISHABLE_KEY,
@@ -485,70 +486,58 @@ def sign_up(email: str, password: str) -> tuple:
         }
         data = {
             "email": email,
-            "password": password
+            "password": password,
+            "data": {}  # 可选的用户元数据
         }
         response = requests.post(url, headers=headers, json=data)
         
+        print(f"注册响应状态码: {response.status_code}")
+        print(f"注册响应内容: {response.text}")
+        
         if response.status_code == 200:
-            data = response.json()
-            user_id = data.get("user", {}).get("id")
+            resp_data = response.json()
+            user_id = resp_data.get("user", {}).get("id")
             
-            # 创建用户profile
-            if user_id:
-                profile_data = {
-                    "id": user_id,
-                    "email": email,
-                    "subscription_tier": "free",
-                    "free_trials_remaining": FREE_TRIAL_LIMIT,
-                    "subscription_expires_at": None,
-                    "created_at": datetime.now().isoformat()
-                }
-                supabase_request("POST", "profiles", profile_data, use_secret=True)
+            if not user_id:
+                return False, "注册失败：未获取到用户ID", None
             
-            return True, "注册成功", user_id
+            # 2. 创建用户 profile（使用 service_role 密钥确保权限）
+            profile_data = {
+                "id": user_id,
+                "email": email,
+                "subscription_tier": "free",
+                "free_trials_remaining": FREE_TRIAL_LIMIT,
+                "subscription_expires_at": None,
+                "created_at": datetime.now().isoformat()
+            }
+            
+            # 使用 service_role 密钥直接插入，绕过 RLS
+            profile_url = f"{SUPABASE_URL}/rest/v1/profiles"
+            profile_headers = {
+                "apikey": SUPABASE_SECRET_KEY,
+                "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal"
+            }
+            
+            profile_response = requests.post(profile_url, headers=profile_headers, json=profile_data)
+            
+            print(f"Profile创建响应状态码: {profile_response.status_code}")
+            print(f"Profile创建响应内容: {profile_response.text}")
+            
+            if profile_response.status_code in [200, 201, 204]:
+                return True, "注册成功", user_id
+            else:
+                # Profile创建失败，但Auth用户已存在，返回警告
+                return True, f"注册成功，但资料创建异常（请联系管理员）", user_id
         else:
             error = response.json()
             if "User already registered" in str(error):
                 return False, "该邮箱已注册，请直接登录", None
             return False, f"注册失败: {error.get('msg', '未知错误')}", None
     except Exception as e:
+        print(f"注册异常: {str(e)}")
         return False, f"注册失败: {str(e)}", None
-
-
-def sign_in(email: str, password: str) -> tuple:
-    """
-    用户登录
-    返回: (success, message, user_id, user_email, access_token)
-    """
-    try:
-        url = f"{SUPABASE_URL}/auth/v1/token?grant_type=password"
-        headers = {
-            "apikey": SUPABASE_PUBLISHABLE_KEY,
-            "Content-Type": "application/json"
-        }
-        data = {
-            "email": email,
-            "password": password
-        }
-        response = requests.post(url, headers=headers, json=data)
-        
-        if response.status_code == 200:
-            data = response.json()
-            user_id = data.get("user", {}).get("id")
-            user_email = data.get("user", {}).get("email")
-            access_token = data.get("access_token")
-            
-            # 更新最后登录时间
-            if user_id:
-                supabase_request("PATCH", f"profiles?id=eq.{user_id}", 
-                                {"last_sign_in_at": datetime.now().isoformat()}, 
-                                use_secret=True)
-            
-            return True, "登录成功", user_id, user_email, access_token
-        else:
-            return False, "邮箱或密码错误", None, None, None
-    except Exception as e:
-        return False, f"登录失败: {str(e)}", None, None, None
 
 
 def sign_out():
@@ -962,6 +951,7 @@ def render_register_form():
             submitted = st.form_submit_button(t()["register_btn"], type="primary", use_container_width=True)
             
             if submitted:
+                # 验证输入
                 if not email or not password:
                     st.warning("请填写邮箱和密码")
                 elif password != confirm:
@@ -973,11 +963,14 @@ def render_register_form():
                         success, msg, user_id = sign_up(email, password)
                         if success:
                             st.success(msg)
+                            st.info("✅ 注册成功！请使用您的邮箱和密码登录")
+                            # 清除注册表单状态，返回登录页面
                             st.session_state.show_register = False
                             st.rerun()
                         else:
                             st.error(msg)
         
+        # 返回登录按钮
         if st.button(t()["back_to_login"], use_container_width=True):
             st.session_state.show_register = False
             st.rerun()
