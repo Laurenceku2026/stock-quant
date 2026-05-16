@@ -2595,75 +2595,248 @@ def render_stock_analysis():
 # ==================== 模块4：回测功能 ====================
 
 def render_backtest():
-    """回测功能模块"""
+    """回测功能模块（真实回测）"""
     st.markdown(f"### {t()['module4_title']}")
     
     last_update = get_last_update_time("backtest")
     st.caption(f"📅 最后更新: {last_update}")
     
+    # 获取回测池
     stocks = get_backtest_pool(st.session_state.user_id, st.session_state.get("access_token"))
-    
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.caption(f"📋 回测池: {len(stocks)}只股票")
-    with col2:
-        if st.button("📊 运行回测", key="run_backtest", use_container_width=True):
-            if len(stocks) == 0:
-                st.warning("回测池为空，请先从推荐池添加股票")
-            else:
-                if not consume_free_trial(st.session_state.user_id, st.session_state.get("access_token")):
-                    st.warning("免费次数已用完，请升级到专业版")
-                else:
-                    with st.spinner("正在运行回测..."):
-                        stock_codes = [s["stock_code"] for s in stocks]
-                        backtest_result = run_backtest_simple(stock_codes)
-                        st.session_state.backtest_result = backtest_result
-                        update_last_update_time("backtest")
-                    st.rerun()
     
     if not stocks:
         st.info("暂无股票，请从推荐池添加")
         return
     
-    for stock in stocks:
-        col1, col2, col3, col4, col5 = st.columns([1.5, 1.5, 2, 2, 1])
-        
-        with col1:
-            st.write(f"**{stock['stock_code']}**")
-        with col2:
-            st.caption(stock.get('stock_name', ''))
-        with col3:
-            status = stock.get('backtest_status', 'pending')
-            if status == "success":
-                st.success("✅ 已回测")
-            else:
-                st.caption("⏸ 待回测")
-        with col4:
-            result = stock.get('backtest_result', {})
-            if result:
-                st.caption(f"年化: {result.get('annual_return', '-')}%")
-        with col5:
-            if st.button("🗑️", key=f"del_backtest_{stock['stock_code']}"):
-                remove_from_backtest_pool(st.session_state.user_id, stock['stock_code'], st.session_state.get("access_token"))
-                st.rerun()
+    # ==================== 回测参数配置 ====================
+    st.markdown("**⚙️ 回测参数设置**")
     
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        backtest_period = st.selectbox(
+            "回测周期",
+            options=["1年", "2年", "3年", "全部"],
+            index=0,
+            key="backtest_period_select"
+        )
+        
+        initial_capital = st.number_input(
+            "初始资金 (元)",
+            min_value=10000,
+            max_value=10000000,
+            value=100000,
+            step=10000,
+            key="backtest_capital"
+        )
+    
+    with col2:
+        buy_threshold = st.slider(
+            "买入阈值 (得分 ≥ )",
+            min_value=50,
+            max_value=90,
+            value=70,
+            step=5,
+            key="backtest_buy_threshold",
+            help="综合得分大于等于此值时买入"
+        )
+        
+        sell_threshold = st.slider(
+            "卖出阈值 (得分 ≤ )",
+            min_value=20,
+            max_value=60,
+            value=40,
+            step=5,
+            key="backtest_sell_threshold",
+            help="综合得分小于等于此值时卖出"
+        )
+    
+    with col3:
+        position_pct = st.slider(
+            "单笔仓位 (%)",
+            min_value=10,
+            max_value=100,
+            value=100,
+            step=10,
+            key="backtest_position_pct",
+            help="每次买入使用的资金比例"
+        )
+        
+        max_positions = st.number_input(
+            "最大持仓数量",
+            min_value=1,
+            max_value=10,
+            value=3,
+            step=1,
+            key="backtest_max_positions"
+        )
+    
+    # 显示回测池股票
+    st.markdown("**📋 回测池股票**")
+    stock_names = []
+    for stock in stocks:
+        stock_names.append(f"{stock['stock_code']} ({stock.get('stock_name', '')})")
+    st.caption(f"待回测股票: {', '.join(stock_names)}")
+    
+    # 运行回测按钮
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        run_btn = st.button("📊 运行回测", key="run_backtest", use_container_width=True, type="primary")
+    
+    if run_btn:
+        if not consume_free_trial(st.session_state.user_id, st.session_state.get("access_token")):
+            st.warning("免费次数已用完，请升级到专业版")
+            return
+        
+        # 计算回测日期范围
+        end_date = datetime.now().strftime("%Y%m%d")
+        if backtest_period == "1年":
+            start_date = (datetime.now() - timedelta(days=365)).strftime("%Y%m%d")
+        elif backtest_period == "2年":
+            start_date = (datetime.now() - timedelta(days=730)).strftime("%Y%m%d")
+        elif backtest_period == "3年":
+            start_date = (datetime.now() - timedelta(days=1095)).strftime("%Y%m%d")
+        else:  # 全部
+            start_date = "20200101"
+        
+        with st.spinner("正在运行回测，请稍候..."):
+            stock_codes = [s["stock_code"] for s in stocks]
+            
+            result = run_real_backtest(
+                stock_codes=stock_codes,
+                start_date=start_date,
+                end_date=end_date,
+                initial_capital=initial_capital,
+                buy_threshold=buy_threshold,
+                sell_threshold=sell_threshold,
+                position_pct=position_pct,
+                max_positions=max_positions
+            )
+            
+            st.session_state.backtest_result = result
+            update_last_update_time("backtest")
+        
+        # 显示回测结果
+        if result.get("success"):
+            st.success(f"✅ 回测完成！共 {result.get('days', 0)} 个交易日")
+        else:
+            st.error(f"❌ 回测失败: {result.get('error', '未知错误')}")
+            return
+    
+    # 显示回测结果
     if st.session_state.get("backtest_result"):
         result = st.session_state.backtest_result
+        
+        if not result.get("success"):
+            st.error(f"回测失败: {result.get('error', '未知错误')}")
+            return
+        
         st.markdown("---")
         st.markdown("**📈 回测报告**")
         
+        # 指标卡片
         col1, col2, col3, col4 = st.columns(4)
         with col1:
+            total_return = result.get('total_return', 0)
+            delta_color = "normal" if total_return >= 0 else "inverse"
+            st.metric("总收益率", f"{total_return:+.1f}%", delta=None)
             st.metric("年化收益率", f"{result.get('annual_return', 0):+.1f}%")
-            st.metric("夏普比率", f"{result.get('sharpe', 0):.2f}")
+        
         with col2:
+            st.metric("夏普比率", f"{result.get('sharpe', 0):.2f}")
             st.metric("最大回撤", f"-{result.get('max_drawdown', 0):.1f}%")
+        
         with col3:
             st.metric("胜率", f"{result.get('win_rate', 0):.1f}%")
-        with col4:
             st.metric("交易次数", f"{result.get('total_trades', 0)}次")
         
-        st.caption("⚠️ 回测结果基于历史数据，不代表未来表现")
+        with col4:
+            st.metric("初始资金", f"¥{result.get('initial_capital', 0):,.0f}")
+            st.metric("最终资金", f"¥{result.get('final_value', 0):,.0f}")
+        
+        # 资金曲线图
+        portfolio_values = result.get('portfolio_values', [])
+        dates = result.get('dates', [])
+        
+        if portfolio_values and dates:
+            st.markdown("**📈 资金曲线图**")
+            
+            # 限制显示点数（避免过密）
+            if len(portfolio_values) > 200:
+                step = len(portfolio_values) // 200
+                display_values = portfolio_values[::step]
+                display_dates = dates[::step]
+            else:
+                display_values = portfolio_values
+                display_dates = dates
+            
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=display_dates,
+                y=display_values,
+                mode='lines',
+                name='资产净值',
+                line=dict(color='#4facfe', width=2),
+                fill='tozeroy',
+                fillcolor='rgba(79, 172, 254, 0.1)'
+            ))
+            
+            # 添加初始资金参考线
+            initial = result.get('initial_capital', 0)
+            fig.add_hline(y=initial, line_dash="dash", line_color="gray", annotation_text=f"初始资金 ¥{initial:,.0f}")
+            
+            fig.update_layout(
+                title="账户资产净值变化",
+                xaxis_title="日期",
+                yaxis_title="资产净值 (元)",
+                height=400,
+                hovermode='x unified'
+            )
+            fig.update_yaxis(tickformat=",.0f")
+            
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # 交易明细
+        trade_logs = result.get('trade_logs', [])
+        if trade_logs:
+            with st.expander(f"📋 交易明细 ({len(trade_logs)}笔)"):
+                # 转换为DataFrame显示
+                trade_df = pd.DataFrame(trade_logs)
+                # 调整列顺序和显示格式
+                display_columns = ['date', 'stock_code', 'stock_name', 'action', 'price', 'shares', 'amount', 'profit_pct']
+                if all(col in trade_df.columns for col in display_columns):
+                    trade_df = trade_df[display_columns]
+                
+                st.dataframe(
+                    trade_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        'date': '日期',
+                        'stock_code': '股票代码',
+                        'stock_name': '股票名称',
+                        'action': '操作',
+                        'price': st.column_config.NumberColumn('价格', format="¥%.2f"),
+                        'shares': '数量',
+                        'amount': st.column_config.NumberColumn('金额', format="¥%.2f"),
+                        'profit_pct': st.column_config.NumberColumn('盈亏', format="%.2f%%")
+                    }
+                )
+        
+        # 回测参数摘要
+        with st.expander("⚙️ 回测参数摘要"):
+            st.markdown(f"""
+            - **回测周期**: {backtest_period}
+            - **初始资金**: ¥{initial_capital:,.0f}
+            - **买入阈值**: {buy_threshold}分
+            - **卖出阈值**: {sell_threshold}分
+            - **单笔仓位**: {position_pct}%
+            - **最大持仓**: {max_positions}只
+            - **交易天数**: {result.get('days', 0)}天
+            - **买入次数**: {result.get('buy_trades', 0)}次
+            - **卖出次数**: {result.get('sell_trades', 0)}次
+            """)
+        
+        st.caption("⚠️ 回测结果基于历史数据，不代表未来表现。实际交易可能存在滑点、手续费等差异。")
 
 
 # ==================== 掘金下单函数 ====================
