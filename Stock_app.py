@@ -618,7 +618,10 @@ def check_admin_login(username: str, password: str) -> bool:
 
 def get_user_profile(user_id: str, access_token: str = None) -> dict:
     """获取用户资料（从 user_settings 表读取）"""
+    print(f"🔍 [get_user_profile] 开始 - user_id: {user_id}")
+    
     if not user_id or user_id == "admin":
+        print(f"🔍 [get_user_profile] 管理员用户，返回默认值")
         return {
             "subscription_tier": "free",
             "free_trials_remaining": FREE_TRIAL_LIMIT,
@@ -630,31 +633,38 @@ def get_user_profile(user_id: str, access_token: str = None) -> dict:
         # 使用 secret key 确保能读取数据
         headers = get_supabase_headers(use_secret=True)
         url = f"{SUPABASE_URL}/rest/v1/user_settings?id=eq.{user_id}"
+        
+        print(f"🔍 [get_user_profile] URL: {url}")
+        
         response = requests.get(url, headers=headers)
         
-        print(f"get_user_profile - status: {response.status_code}")
-        print(f"get_user_profile - response: {response.text}")
+        print(f"🔍 [get_user_profile] 状态码: {response.status_code}")
+        print(f"🔍 [get_user_profile] 响应内容: {response.text}")
         
         if response.status_code == 200 and response.json():
             data = response.json()[0]
-            return {
+            result = {
                 "subscription_tier": data.get("subscription_tier", "free"),
                 "free_trials_remaining": data.get("free_trials_remaining", FREE_TRIAL_LIMIT),
                 "subscription_expires_at": data.get("subscription_expires_at"),
                 "last_sign_in_at": data.get("last_sign_in_at")
             }
+            print(f"🔍 [get_user_profile] ✅ 成功获取: {result}")
+            return result
         else:
+            print(f"🔍 [get_user_profile] 无数据，尝试创建...")
             # 如果 user_settings 中没有记录，创建一条
+            email = st.session_state.user_email if hasattr(st.session_state, 'user_email') else "unknown"
             settings_data = {
                 "user_id": user_id,
-                "email": st.session_state.user_email,
+                "email": email,
                 "subscription_tier": "free",
                 "free_trials_remaining": FREE_TRIAL_LIMIT,
                 "created_at": datetime.now().isoformat()
             }
             insert_url = f"{SUPABASE_URL}/rest/v1/user_settings"
             insert_response = requests.post(insert_url, headers=headers, json=settings_data)
-            print(f"创建 user_settings - status: {insert_response.status_code}")
+            print(f"🔍 [get_user_profile] 创建结果: {insert_response.status_code}")
             
             return {
                 "subscription_tier": "free",
@@ -663,7 +673,7 @@ def get_user_profile(user_id: str, access_token: str = None) -> dict:
                 "last_sign_in_at": None
             }
     except Exception as e:
-        print(f"获取用户资料失败: {e}")
+        print(f"🔍 [get_user_profile] ❌ 异常: {e}")
     
     return {
         "subscription_tier": "free",
@@ -671,17 +681,32 @@ def get_user_profile(user_id: str, access_token: str = None) -> dict:
         "subscription_expires_at": None,
         "last_sign_in_at": None
     }
-
 def update_user_profile(user_id: str, data: dict, access_token: str = None) -> bool:
     """更新用户资料（更新 user_settings 表）"""
     try:
+        print(f"🔍 [update_user_profile] 开始 - user_id: {user_id}, data: {data}")
+        
+        # 使用 secret key 确保有权限
         headers = get_supabase_headers(use_secret=True)
+        # 关键：更新 user_settings 表
         url = f"{SUPABASE_URL}/rest/v1/user_settings?id=eq.{user_id}"
+        
+        print(f"🔍 [update_user_profile] URL: {url}")
+        
         response = requests.patch(url, headers=headers, json=data)
-        return response.status_code in [200, 204]
-    except Exception:
+        
+        print(f"🔍 [update_user_profile] 状态码: {response.status_code}")
+        print(f"🔍 [update_user_profile] 响应内容: {response.text}")
+        
+        if response.status_code in [200, 204]:
+            print(f"🔍 [update_user_profile] ✅ 更新成功")
+            return True
+        else:
+            print(f"🔍 [update_user_profile] ❌ 更新失败，状态码: {response.status_code}")
+            return False
+    except Exception as e:
+        print(f"🔍 [update_user_profile] ❌ 异常: {e}")
         return False
-
 
 def get_remaining_trials(user_id: str, access_token: str = None) -> int:
     """获取剩余免费次数"""
@@ -696,26 +721,48 @@ def consume_free_trial(user_id: str, access_token: str = None) -> bool:
     消耗一次免费次数
     返回: True=有次数可用，False=次数已用完
     """
+    print(f"🔍 [consume_free_trial] 开始 - user_id: {user_id}")
+    
     # 直接获取最新 profile
     profile = get_user_profile(user_id, access_token)
+    print(f"🔍 [consume_free_trial] profile: {profile}")
     
     # 专业版用户无限使用
     if profile.get("subscription_tier") == "pro":
+        print(f"🔍 [consume_free_trial] 专业版用户，无限使用")
         return True
     
     # 获取剩余次数
     remaining = profile.get("free_trials_remaining", 0)
+    print(f"🔍 [consume_free_trial] 原始remaining: {remaining}, 类型: {type(remaining)}")
+    
     try:
         remaining = int(remaining) if remaining else 0
     except (ValueError, TypeError):
         remaining = 0
     
+    print(f"🔍 [consume_free_trial] 转换后remaining: {remaining}")
+    
     if remaining > 0:
         # 更新数据库：剩余次数减1
         new_remaining = remaining - 1
+        print(f"🔍 [consume_free_trial] 尝试更新 - new_remaining: {new_remaining}")
+        
         success = update_user_profile(user_id, {"free_trials_remaining": new_remaining}, access_token)
+        print(f"🔍 [consume_free_trial] update_user_profile返回: {success}")
+        
+        # 验证是否真的更新了
+        verify_profile = get_user_profile(user_id, access_token)
+        print(f"🔍 [consume_free_trial] 验证 - 更新后profile: {verify_profile}")
+        
+        if success:
+            print(f"🔍 [consume_free_trial] ✅ 消耗成功，剩余次数: {new_remaining}")
+        else:
+            print(f"🔍 [consume_free_trial] ❌ 消耗失败")
+        
         return success
     else:
+        print(f"🔍 [consume_free_trial] ❌ 次数已用完，显示付费墙")
         st.session_state.show_paywall = True
         return False
 
