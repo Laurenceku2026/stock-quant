@@ -627,9 +627,13 @@ def get_user_profile(user_id: str, access_token: str = None) -> dict:
         }
     
     try:
+        # 使用 secret key 确保能读取数据
         headers = get_supabase_headers(use_secret=True)
         url = f"{SUPABASE_URL}/rest/v1/user_settings?id=eq.{user_id}"
         response = requests.get(url, headers=headers)
+        
+        print(f"get_user_profile - status: {response.status_code}")
+        print(f"get_user_profile - response: {response.text}")
         
         if response.status_code == 200 and response.json():
             data = response.json()[0]
@@ -638,6 +642,25 @@ def get_user_profile(user_id: str, access_token: str = None) -> dict:
                 "free_trials_remaining": data.get("free_trials_remaining", FREE_TRIAL_LIMIT),
                 "subscription_expires_at": data.get("subscription_expires_at"),
                 "last_sign_in_at": data.get("last_sign_in_at")
+            }
+        else:
+            # 如果 user_settings 中没有记录，创建一条
+            settings_data = {
+                "user_id": user_id,
+                "email": st.session_state.user_email,
+                "subscription_tier": "free",
+                "free_trials_remaining": FREE_TRIAL_LIMIT,
+                "created_at": datetime.now().isoformat()
+            }
+            insert_url = f"{SUPABASE_URL}/rest/v1/user_settings"
+            insert_response = requests.post(insert_url, headers=headers, json=settings_data)
+            print(f"创建 user_settings - status: {insert_response.status_code}")
+            
+            return {
+                "subscription_tier": "free",
+                "free_trials_remaining": FREE_TRIAL_LIMIT,
+                "subscription_expires_at": None,
+                "last_sign_in_at": None
             }
     except Exception as e:
         print(f"获取用户资料失败: {e}")
@@ -648,7 +671,6 @@ def get_user_profile(user_id: str, access_token: str = None) -> dict:
         "subscription_expires_at": None,
         "last_sign_in_at": None
     }
-
 
 def update_user_profile(user_id: str, data: dict, access_token: str = None) -> bool:
     """更新用户资料（更新 user_settings 表）"""
@@ -2735,21 +2757,36 @@ def render_sidebar():
             user_id = st.session_state.user_id
             access_token = st.session_state.get("access_token")
             
-            # 直接从 get_user_profile 获取最新数据
+            # ===== 调试1：打印原始 profile =====
             profile = get_user_profile(user_id, access_token)
+            st.write(f"🔍 调试1 - profile = {profile}")
             
-            # 从 profile 中直接获取值，不要调用其他函数
             tier = profile.get("subscription_tier", "free")
-            remaining = profile.get("free_trials_remaining", 0)
+            remaining_raw = profile.get("free_trials_remaining", 0)
+            
+            # ===== 调试2：打印提取的值 =====
+            st.write(f"🔍 调试2 - tier={tier}, remaining_raw={remaining_raw}, type={type(remaining_raw)}")
             
             # 确保 remaining 是数字
             try:
-                remaining = int(remaining) if remaining else 0
+                remaining = int(remaining_raw) if remaining_raw else 0
             except (ValueError, TypeError):
                 remaining = 0
             
+            # ===== 调试3：打印转换后的值 =====
+            st.write(f"🔍 调试3 - remaining after conversion = {remaining}")
+            
+            # 检查剩余次数是否有效
+            if remaining <= 0 and tier != "pro":
+                # ===== 调试4：打印警告 =====
+                st.write(f"🔍 调试4 - WARNING: remaining={remaining}, tier={tier}")
+                st.warning("⚠️ 调试信息：剩余次数为0或无效")
+            
             tier_display = "💎 专业版" if tier == "pro" else "🔒 免费版"
-            remaining_display = "∞" if remaining == -1 else str(remaining)
+            remaining_display = "∞" if tier == "pro" else str(remaining)
+            
+            # ===== 调试5：打印显示值 =====
+            st.write(f"🔍 调试5 - remaining_display = {remaining_display}")
             
             st.markdown(f"""
             <div class="sidebar-user-info">
@@ -2787,7 +2824,6 @@ def render_sidebar():
         st.markdown("---")
         st.caption("v3.0 | TechLife")
         st.caption("数据: Tushare | 交易: 掘金 | 支付: Stripe")
-
 
 # ==================== 右上角按钮 ====================
 
