@@ -1112,19 +1112,22 @@ print("=" * 60)
 # ==================== Tushare 数据获取 ====================
 
 def get_stock_daily(ts_code: str, days: int = 120) -> pd.DataFrame:
-    """
-    获取股票日线数据
-    ts_code: 如 '000001.SZ'
-    days: 获取最近多少天的数据
-    """
+    """获取股票日线数据"""
+    print(f"🔍 get_stock_daily 开始: {ts_code}, days={days}")
+    
     if not TUSHARE_AVAILABLE or TUSHARE_PRO is None:
+        print(f"🔍 get_stock_daily - Tushare不可用")
         return pd.DataFrame()
     
     try:
         end_date = datetime.now().strftime("%Y%m%d")
         start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
         
+        print(f"🔍 get_stock_daily - 日期范围: {start_date} 到 {end_date}")
+        
         df = TUSHARE_PRO.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+        print(f"🔍 get_stock_daily - 返回行数: {len(df) if df is not None else 0}")
+        
         if df is not None and len(df) > 0:
             df = df.sort_values('trade_date')
             df = df.rename(columns={
@@ -1134,7 +1137,7 @@ def get_stock_daily(ts_code: str, days: int = 120) -> pd.DataFrame:
             return df
         return pd.DataFrame()
     except Exception as e:
-        print(f"获取{ts_code}日线数据失败: {e}")
+        print(f"🔍 get_stock_daily - 异常: {e}")
         return pd.DataFrame()
 
 
@@ -1456,9 +1459,14 @@ def calculate_technical_score(df: pd.DataFrame) -> Dict:
 
 def get_stock_score(ts_code: str, stock_name: str = "") -> Dict:
     """获取个股综合评分"""
+    print(f"🔍 get_stock_score 开始: {ts_code}")
+    
+    # 获取日线数据
     df = get_stock_daily(ts_code, days=120)
+    print(f"🔍 get_stock_score - df shape: {df.shape if not df.empty else '空'}")
     
     if df.empty:
+        print(f"🔍 get_stock_score - 数据为空，返回默认值")
         total_score = 50
         level = "D"
         action = "观望"
@@ -1481,9 +1489,10 @@ def get_stock_score(ts_code: str, stock_name: str = "") -> Dict:
                 position = config["position"]
                 break
     
+    # 获取股票名称
     name = stock_name if stock_name else get_stock_name_from_tushare(ts_code)
     
-    return {
+    result = {
         "stock_code": ts_code,
         "stock_name": name,
         "total_score": round(total_score, 2),
@@ -1494,6 +1503,8 @@ def get_stock_score(ts_code: str, stock_name: str = "") -> Dict:
         "tech_details": tech_details,
         "reasons": generate_score_reasons(total_score)
     }
+    print(f"🔍 get_stock_score - 结果: {result}")
+    return result
 
 
 def generate_score_reasons(score: float) -> str:
@@ -1930,7 +1941,9 @@ def render_stock_analysis():
     if st.session_state.get("analyze_code"):
         stock_code = st.session_state.analyze_code
         stock_name = st.session_state.get("analyze_name", "")
-        
+        # ===== 添加调试信息 =====
+        st.write(f"🔍 调试: 正在分析 {stock_code}")
+    
         with st.spinner("正在分析..."):
             # 使用缓存获取评分
             score_result = get_cached_stock_score(stock_code, stock_name)
