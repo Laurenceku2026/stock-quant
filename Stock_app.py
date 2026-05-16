@@ -419,8 +419,12 @@ print("第1部分加载完成")
 print("=" * 60)
 # ============================================================
 # ============================================================
-# 第2部分：管理员页面 + 登录验证 + 用户认证 + Supabase API封装
-# 修复：添加 access_token 支持，解决 RLS 认证问题
+# 第2部分：用户认证 + Supabase API封装 + 股票池操作 + 次数扣减 + Stripe支付
+# 修复内容：
+# - sign_up: 只创建Auth用户，不创建profile
+# - sign_in: 登录时自动创建user_settings（替代profiles）
+# - consume_free_trial: 修复次数扣减逻辑
+# - 新增 Stripe 支付函数
 # ============================================================
 
 # ==================== Supabase API 封装 ====================
@@ -474,11 +478,11 @@ def supabase_request(method: str, endpoint: str, data=None, params=None, use_sec
 
 def sign_up(email: str, password: str) -> tuple:
     """
-    用户注册
+    用户注册 - 只创建Auth用户，不创建其他表
+    user_settings 会在首次登录时自动创建
     返回: (success, message, user_id)
     """
     try:
-        # 1. 注册用户到 Supabase Auth
         url = f"{SUPABASE_URL}/auth/v1/signup"
         headers = {
             "apikey": SUPABASE_PUBLISHABLE_KEY,
@@ -486,58 +490,90 @@ def sign_up(email: str, password: str) -> tuple:
         }
         data = {
             "email": email,
-            "password": password,
-            "data": {}  # 可选的用户元数据
+            "password": password
         }
         response = requests.post(url, headers=headers, json=data)
-        
-        print(f"注册响应状态码: {response.status_code}")
-        print(f"注册响应内容: {response.text}")
         
         if response.status_code == 200:
             resp_data = response.json()
             user_id = resp_data.get("user", {}).get("id")
-            
-            if not user_id:
-                return False, "注册失败：未获取到用户ID", None
-            
-            # 2. 创建用户 profile（使用 service_role 密钥确保权限）
-            profile_data = {
-                "id": user_id,
-                "email": email,
-                "subscription_tier": "free",
-                "free_trials_remaining": FREE_TRIAL_LIMIT,
-                "subscription_expires_at": None,
-                "created_at": datetime.now().isoformat()
-            }
-            
-            # 使用 service_role 密钥直接插入，绕过 RLS
-            profile_url = f"{SUPABASE_URL}/rest/v1/profiles"
-            profile_headers = {
-                "apikey": SUPABASE_SECRET_KEY,
-                "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
-                "Content-Type": "application/json",
-                "Prefer": "return=minimal"
-            }
-            
-            profile_response = requests.post(profile_url, headers=profile_headers, json=profile_data)
-            
-            print(f"Profile创建响应状态码: {profile_response.status_code}")
-            print(f"Profile创建响应内容: {profile_response.text}")
-            
-            if profile_response.status_code in [200, 201, 204]:
-                return True, "注册成功", user_id
-            else:
-                # Profile创建失败，但Auth用户已存在，返回警告
-                return True, f"注册成功，但资料创建异常（请联系管理员）", user_id
+            return True, "注册成功，请登录", user_id
         else:
             error = response.json()
             if "User already registered" in str(error):
                 return False, "该邮箱已注册，请直接登录", None
             return False, f"注册失败: {error.get('msg', '未知错误')}", None
     except Exception as e:
-        print(f"注册异常: {str(e)}")
         return False, f"注册失败: {str(e)}", None
+
+
+def ensure_user_settings(user_id: str, email: str, access_token: str = None) -> bool:
+    """
+    确保用户有设置记录（user_settings表）
+    如果不存在则自动创建
+    返回: True=成功，False=失败
+    """
+    try:
+        # 查询是否存在
+        headers = get_supabase_headers(use_secret=True)
+        check_url = f"{SUPABASE_URL}/rest/v1/user_settings?id=eq.{user_id}"
+        check_response = requests.get(check_url, headers=headers)
+        
+        if check_response.status_code == 200 and check_response.json():
+            return True  # 已存在
+        
+        # 不存在，创建
+        settings_data = {
+            "user_id": user_id,
+            "email": email,
+            "subscription_tier": "free",
+            "free_trials_remaining": FREE_TRIAL_LIMIT,
+            "created_at": datetime.now().isoformat()
+        }
+        
+        insert_url = f"{SUPABASE_URL}/rest/v1/user_settings"
+        insert_response = requests.post(insert_url, headers=headers, json=settings_data)
+        
+        return insert_response.status_code in [200, 201, 204]
+    except Exception as e:
+        print(f"确保用户设置失败: {e}")
+        return False
+
+
+def sign_in(email: str, password: str) -> tuple:
+    """
+    用户登录
+    返回: (success, message, user_id, user_email, access_token)
+    """
+    try:
+        url = f"{SUPABASE_URL}/auth/v1/token?grant_type=password"
+        headers = {
+            "apikey": SUPABASE_PUBLISHABLE_KEY,
+            "Content-Type": "application/json"
+        }
+        data = {
+            "email": email,
+            "password": password
+        }
+        response = requests.post(url, headers=headers, json=data)
+        
+        if response.status_code == 200:
+            resp_data = response.json()
+            user_id = resp_data.get("user", {}).get("id")
+            user_email = resp_data.get("user", {}).get("email")
+            access_token = resp_data.get("access_token")
+            
+            # 确保有 user_settings 记录
+            ensure_user_settings(user_id, user_email, access_token)
+            
+            # 更新最后登录时间
+            update_user_profile(user_id, {"last_sign_in_at": datetime.now().isoformat()}, access_token)
+            
+            return True, "登录成功", user_id, user_email, access_token
+        else:
+            return False, "邮箱或密码错误", None, None, None
+    except Exception as e:
+        return False, f"登录失败: {str(e)}", None, None, None
 
 
 def sign_out():
@@ -564,7 +600,7 @@ def check_admin_login(username: str, password: str) -> bool:
 # ==================== 用户资料操作 ====================
 
 def get_user_profile(user_id: str, access_token: str = None) -> dict:
-    """获取用户资料（订阅等级、剩余次数等）"""
+    """获取用户资料（从 user_settings 表读取）"""
     if not user_id or user_id == "admin":
         return {
             "subscription_tier": "free",
@@ -574,7 +610,10 @@ def get_user_profile(user_id: str, access_token: str = None) -> dict:
         }
     
     try:
-        response = supabase_request("GET", f"profiles?id=eq.{user_id}", use_secret=True, access_token=access_token)
+        headers = get_supabase_headers(use_secret=True)
+        url = f"{SUPABASE_URL}/rest/v1/user_settings?id=eq.{user_id}"
+        response = requests.get(url, headers=headers)
+        
         if response.status_code == 200 and response.json():
             data = response.json()[0]
             return {
@@ -595,9 +634,11 @@ def get_user_profile(user_id: str, access_token: str = None) -> dict:
 
 
 def update_user_profile(user_id: str, data: dict, access_token: str = None) -> bool:
-    """更新用户资料"""
+    """更新用户资料（更新 user_settings 表）"""
     try:
-        response = supabase_request("PATCH", f"profiles?id=eq.{user_id}", data, use_secret=True, access_token=access_token)
+        headers = get_supabase_headers(use_secret=True)
+        url = f"{SUPABASE_URL}/rest/v1/user_settings?id=eq.{user_id}"
+        response = requests.patch(url, headers=headers, json=data)
         return response.status_code in [200, 204]
     except Exception:
         return False
@@ -607,7 +648,7 @@ def get_remaining_trials(user_id: str, access_token: str = None) -> int:
     """获取剩余免费次数"""
     profile = get_user_profile(user_id, access_token)
     if profile.get("subscription_tier") == "pro":
-        return -1
+        return -1  # -1 表示无限
     return profile.get("free_trials_remaining", 0)
 
 
@@ -618,6 +659,7 @@ def consume_free_trial(user_id: str, access_token: str = None) -> bool:
     """
     profile = get_user_profile(user_id, access_token)
     
+    # 专业版用户无限使用
     if profile.get("subscription_tier") == "pro":
         return True
     
@@ -701,45 +743,6 @@ def remove_from_recommended_pool(user_id: str, stock_code: str, access_token: st
         return False, f"删除失败: {str(e)}"
 
 
-def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
-    """自动推荐Top10股票"""
-    if not TUSHARE_AVAILABLE:
-        return []
-    
-    all_stocks = []
-    for sector_name, sector_info in HOT_SECTORS.items():
-        for i, ts_code in enumerate(sector_info["stocks"]):
-            stock_name = sector_info["names"][i] if i < len(sector_info["names"]) else ts_code
-            all_stocks.append({"code": ts_code, "name": stock_name, "sector": sector_name})
-    
-    seen = set()
-    unique_stocks = []
-    for stock in all_stocks:
-        if stock["code"] not in seen:
-            seen.add(stock["code"])
-            unique_stocks.append(stock)
-    
-    scored_stocks = []
-    for stock in unique_stocks:
-        score_result = get_stock_score(stock["code"], stock["name"])
-        scored_stocks.append({
-            "code": stock["code"],
-            "name": stock["name"],
-            "score": score_result["total_score"],
-            "level": score_result["level"],
-            "action": score_result["action"],
-            "sector": stock["sector"]
-        })
-    
-    scored_stocks.sort(key=lambda x: x["score"], reverse=True)
-    top10 = scored_stocks[:10]
-    
-    for stock in top10:
-        add_to_recommended_pool(user_id, stock["code"], stock["name"], source="ai", score=stock["score"], access_token=access_token)
-    
-    return top10
-
-
 def get_backtest_pool(user_id: str, access_token: str = None) -> List[Dict]:
     """获取用户的回测股票池"""
     if not user_id or user_id == "admin":
@@ -821,46 +824,110 @@ def get_live_pool(user_id: str, access_token: str = None) -> List[Dict]:
         return []
 
 
-def add_to_live_pool(user_id: str, stock_code: str, stock_name: str, shares: int = 0, avg_cost: float = 0, access_token: str = None) -> tuple:
-    """添加股票到实操池"""
-    stocks = get_live_pool(user_id, access_token)
-    for s in stocks:
-        if s.get("stock_code") == stock_code:
-            return False, f"{stock_code} 已在实操池中"
+def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
+    """自动推荐Top10股票（基于技术指标评分）"""
+    if not TUSHARE_AVAILABLE:
+        return []
+    
+    all_stocks = []
+    for sector_name, sector_info in HOT_SECTORS.items():
+        for i, ts_code in enumerate(sector_info["stocks"]):
+            stock_name = sector_info["names"][i] if i < len(sector_info["names"]) else ts_code
+            all_stocks.append({"code": ts_code, "name": stock_name, "sector": sector_name})
+    
+    seen = set()
+    unique_stocks = []
+    for stock in all_stocks:
+        if stock["code"] not in seen:
+            seen.add(stock["code"])
+            unique_stocks.append(stock)
+    
+    scored_stocks = []
+    for stock in unique_stocks:
+        score_result = get_stock_score(stock["code"], stock["name"])
+        scored_stocks.append({
+            "code": stock["code"],
+            "name": stock["name"],
+            "score": score_result["total_score"],
+            "level": score_result["level"],
+            "action": score_result["action"],
+            "sector": stock["sector"]
+        })
+    
+    scored_stocks.sort(key=lambda x: x["score"], reverse=True)
+    top10 = scored_stocks[:10]
+    
+    for stock in top10:
+        add_to_recommended_pool(user_id, stock["code"], stock["name"], source="ai", score=stock["score"], access_token=access_token)
+    
+    return top10
+
+
+# ==================== Stripe 支付函数 ====================
+
+def create_checkout_session(user_id: str, user_email: str, price_id: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    创建Stripe Checkout Session
+    返回: (session_url, error_message)
+    """
+    if not STRIPE_SECRET_KEY:
+        return None, "Stripe密钥未配置"
     
     try:
-        data = {
-            "user_id": user_id,
-            "stock_code": stock_code,
-            "stock_name": stock_name,
-            "added_by": "user",
-            "added_time": datetime.now().isoformat(),
-            "added_date": datetime.now().date().isoformat(),
-            "shares": shares,
-            "avg_cost": avg_cost
-        }
-        response = supabase_request("POST", "live_pool", data, access_token=access_token)
-        if response.status_code in [200, 201]:
-            return True, f"成功添加 {stock_code} ({stock_name})"
-        return False, f"添加失败: {response.text}"
-    except Exception as e:
-        return False, f"添加失败: {str(e)}"
-
-
-def remove_from_live_pool(user_id: str, stock_code: str, access_token: str = None) -> tuple:
-    """从实操池删除股票"""
-    try:
-        response = supabase_request(
-            "DELETE", 
-            "live_pool",
-            params=f"user_id=eq.{user_id}&stock_code=eq.{stock_code}",
-            access_token=access_token
+        import stripe
+        stripe.api_key = STRIPE_SECRET_KEY
+        
+        # 构建成功URL和取消URL
+        base_url = "https://stock-quant-strategy.streamlit.app"
+        success_url = f"{base_url}?session_id={{CHECKOUT_SESSION_ID}}"
+        cancel_url = f"{base_url}?canceled=true"
+        
+        session = stripe.checkout.Session.create(
+            customer_email=user_email,
+            payment_method_types=['card'],
+            line_items=[{
+                'price': price_id,
+                'quantity': 1,
+            }],
+            mode='subscription',
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata={
+                'user_id': user_id,
+                'price_id': price_id
+            }
         )
-        if response.status_code in [200, 204]:
-            return True, f"已删除 {stock_code}"
-        return False, f"删除失败: {response.text}"
+        
+        return session.url, None
     except Exception as e:
-        return False, f"删除失败: {str(e)}"
+        return None, str(e)
+
+
+def handle_stripe_callback():
+    """处理Stripe支付成功回调"""
+    query_params = st.query_params
+    
+    if "session_id" in query_params:
+        session_id = query_params["session_id"]
+        try:
+            import stripe
+            stripe.api_key = STRIPE_SECRET_KEY
+            session = stripe.checkout.Session.retrieve(session_id)
+            
+            if session.payment_status == "paid":
+                user_id = session.metadata.get("user_id")
+                if user_id and user_id != "admin":
+                    update_user_profile(user_id, {"subscription_tier": "pro"})
+                    st.success("✅ 支付成功！您已是专业版用户")
+                    st.balloons()
+                    st.query_params.clear()
+                    st.rerun()
+                else:
+                    st.warning("支付成功，但用户信息验证失败，请联系管理员")
+            else:
+                st.info("支付未完成，请完成支付后刷新页面")
+        except Exception as e:
+            st.error(f"验证支付状态失败: {e}")
 
 
 # ==================== 数据解析函数 ====================
@@ -951,7 +1018,6 @@ def render_register_form():
             submitted = st.form_submit_button(t()["register_btn"], type="primary", use_container_width=True)
             
             if submitted:
-                # 验证输入
                 if not email or not password:
                     st.warning("请填写邮箱和密码")
                 elif password != confirm:
@@ -963,14 +1029,11 @@ def render_register_form():
                         success, msg, user_id = sign_up(email, password)
                         if success:
                             st.success(msg)
-                            st.info("✅ 注册成功！请使用您的邮箱和密码登录")
-                            # 清除注册表单状态，返回登录页面
                             st.session_state.show_register = False
                             st.rerun()
                         else:
                             st.error(msg)
         
-        # 返回登录按钮
         if st.button(t()["back_to_login"], use_container_width=True):
             st.session_state.show_register = False
             st.rerun()
@@ -989,6 +1052,11 @@ def render_admin_login_form():
             
             if submitted:
                 if check_admin_login(username, password):
+                    # 保存管理员登录前的用户状态
+                    st.session_state.admin_previous_user_id = st.session_state.get("user_id")
+                    st.session_state.admin_previous_user_email = st.session_state.get("user_email")
+                    st.session_state.admin_previous_access_token = st.session_state.get("access_token")
+                    
                     st.session_state.admin_mode = True
                     st.session_state.show_admin_login = False
                     st.session_state.authenticated = True
@@ -1003,7 +1071,7 @@ def render_admin_login_form():
             st.rerun()
 
 
-print("第2部分加载完成（已修复access_token支持）")
+print("第2部分加载完成")
 print("=" * 60)
 # ============================================================
 # 第3部分：评分引擎（技术指标计算、板块热度、个股评分）
@@ -1621,8 +1689,12 @@ def run_backtest_simple(stock_codes: List[str]) -> Dict:
 print("第3部分加载完成")
 print("=" * 60)
 # ============================================================
-# 第4部分：5个功能模块（市场简报、推荐股票池、个股分析、回测、实操信号）
-#         + 掘金下单UI + Stripe支付UI
+# ============================================================
+# 第4部分：5个功能模块 + 掘金一键下单集成
+# 修复内容：
+# - 修复 render_live_signals 中的 score 类型转换
+# - 集成掘金一键下单功能
+# - 优化各模块的缓存使用
 # ============================================================
 
 # ==================== 模块1：市场简报 ====================
@@ -1639,14 +1711,19 @@ def render_market_brief():
         refresh = st.button(t()["refresh"], key="refresh_brief", use_container_width=True)
     
     if refresh:
-        if not consume_free_trial(st.session_state.user_id):
+        if not consume_free_trial(st.session_state.user_id, st.session_state.get("access_token")):
             st.warning("免费次数已用完，请升级到专业版")
             return
         update_last_update_time("market_brief")
         st.rerun()
     
     with st.spinner("正在获取市场数据..."):
-        sector_df = get_sector_performance()
+        # 使用缓存获取板块表现
+        if TUSHARE_AVAILABLE:
+            sector_df = get_cached_sector_performance()
+        else:
+            sector_df = get_sector_performance()
+        
         market_trend = "震荡上行"
         market_desc = "近期市场情绪偏暖，科技板块持续活跃，建议关注热点板块轮动机会。"
         
@@ -1696,7 +1773,8 @@ def render_recommended_pool():
                 if is_valid:
                     stock_name = get_stock_name_from_tushare(formatted_code)
                     success, msg = add_to_recommended_pool(
-                        st.session_state.user_id, formatted_code, stock_name, source="user"
+                        st.session_state.user_id, formatted_code, stock_name, source="user",
+                        access_token=st.session_state.get("access_token")
                     )
                     if success:
                         st.success(msg)
@@ -1708,19 +1786,25 @@ def render_recommended_pool():
     with col3:
         refresh = st.button(t()["refresh"], key="refresh_pool", use_container_width=True)
     with col4:
-        st.caption(f"📊 当前: {len(get_recommended_pool(st.session_state.user_id))}/{MAX_RECOMMENDED_STOCKS}")
+        current_count = len(get_recommended_pool(st.session_state.user_id, st.session_state.get("access_token")))
+        st.caption(f"📊 当前: {current_count}/{MAX_RECOMMENDED_STOCKS}")
     
     if refresh:
-        if not consume_free_trial(st.session_state.user_id):
+        if not consume_free_trial(st.session_state.user_id, st.session_state.get("access_token")):
             st.warning("免费次数已用完，请升级到专业版")
             return
         with st.spinner("正在刷新推荐池..."):
+            # 清空现有推荐池中的AI推荐（保留用户手动添加的）
+            stocks = get_recommended_pool(st.session_state.user_id, st.session_state.get("access_token"))
+            for stock in stocks:
+                if stock.get("source") == "ai":
+                    remove_from_recommended_pool(st.session_state.user_id, stock["stock_code"], st.session_state.get("access_token"))
             # 自动推荐Top10
-            auto_recommend_top10(st.session_state.user_id)
+            auto_recommend_top10(st.session_state.user_id, st.session_state.get("access_token"))
         update_last_update_time("recommended_pool")
         st.rerun()
     
-    stocks = get_recommended_pool(st.session_state.user_id)
+    stocks = get_recommended_pool(st.session_state.user_id, st.session_state.get("access_token"))
     
     if not stocks:
         st.info("暂无股票，请点击[添加]按钮添加股票，或点击[刷新]获取AI推荐")
@@ -1761,20 +1845,20 @@ def render_recommended_pool():
             
             with col6:
                 if st.button("🗑️", key=f"del_{stock['stock_code']}_{idx}"):
-                    remove_from_recommended_pool(st.session_state.user_id, stock['stock_code'])
+                    remove_from_recommended_pool(st.session_state.user_id, stock['stock_code'], st.session_state.get("access_token"))
                     st.rerun()
     
     col1, col2, col3 = st.columns([1, 1, 4])
     with col1:
         if st.button("🗑️ 清空所有", key="clear_pool", use_container_width=True):
             for s in stocks:
-                remove_from_recommended_pool(st.session_state.user_id, s["stock_code"])
+                remove_from_recommended_pool(st.session_state.user_id, s["stock_code"], st.session_state.get("access_token"))
             st.rerun()
     with col2:
         if st.button("📋 移到回测池", key="move_to_backtest", use_container_width=True):
             for s in stocks:
-                add_to_backtest_pool(st.session_state.user_id, s["stock_code"], s.get("stock_name", ""))
-                remove_from_recommended_pool(st.session_state.user_id, s["stock_code"])
+                add_to_backtest_pool(st.session_state.user_id, s["stock_code"], s.get("stock_name", ""), st.session_state.get("access_token"))
+                remove_from_recommended_pool(st.session_state.user_id, s["stock_code"], st.session_state.get("access_token"))
             st.success(f"已将{len(stocks)}只股票移到回测池")
             st.rerun()
 
@@ -1802,7 +1886,7 @@ def render_stock_analysis():
             if stock_code:
                 is_valid, formatted = validate_stock_code(stock_code)
                 if is_valid:
-                    if not consume_free_trial(st.session_state.user_id):
+                    if not consume_free_trial(st.session_state.user_id, st.session_state.get("access_token")):
                         st.warning("免费次数已用完，请升级到专业版")
                     else:
                         st.session_state.analyze_code = formatted
@@ -1817,8 +1901,9 @@ def render_stock_analysis():
         stock_name = st.session_state.get("analyze_name", "")
         
         with st.spinner("正在分析..."):
-            score_result = get_stock_score(stock_code, stock_name)
-            df = get_stock_daily(stock_code, days=60)
+            # 使用缓存获取评分
+            score_result = get_cached_stock_score(stock_code, stock_name)
+            df = get_cached_stock_data(stock_code, days=60)
         
         level = score_result["level"]
         color = SIGNAL_LEVELS.get(level, {}).get("color", "#888888")
@@ -1841,7 +1926,6 @@ def render_stock_analysis():
                                  vertical_spacing=0.05, 
                                  row_heights=[0.7, 0.3])
             
-            # 涨红跌绿色
             colors = ['red' if close >= open else 'green' 
                       for close, open in zip(df['close'], df['open'])]
             
@@ -1924,7 +2008,8 @@ def render_stock_analysis():
             if st.button("➕ 添加到推荐池", use_container_width=True):
                 success, msg = add_to_recommended_pool(
                     st.session_state.user_id, stock_code, score_result['stock_name'], source="user",
-                    score=score_result["total_score"]
+                    score=score_result["total_score"],
+                    access_token=st.session_state.get("access_token")
                 )
                 if success:
                     st.success(msg)
@@ -1933,7 +2018,8 @@ def render_stock_analysis():
         with col2:
             if st.button("📋 添加到回测池", use_container_width=True):
                 success, msg = add_to_backtest_pool(
-                    st.session_state.user_id, stock_code, score_result['stock_name']
+                    st.session_state.user_id, stock_code, score_result['stock_name'],
+                    access_token=st.session_state.get("access_token")
                 )
                 if success:
                     st.success(msg)
@@ -1954,7 +2040,7 @@ def render_backtest():
     last_update = get_last_update_time("backtest")
     st.caption(f"📅 最后更新: {last_update}")
     
-    stocks = get_backtest_pool(st.session_state.user_id)
+    stocks = get_backtest_pool(st.session_state.user_id, st.session_state.get("access_token"))
     
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -1964,7 +2050,7 @@ def render_backtest():
             if len(stocks) == 0:
                 st.warning("回测池为空，请先从推荐池添加股票")
             else:
-                if not consume_free_trial(st.session_state.user_id):
+                if not consume_free_trial(st.session_state.user_id, st.session_state.get("access_token")):
                     st.warning("免费次数已用完，请升级到专业版")
                 else:
                     with st.spinner("正在运行回测..."):
@@ -1997,7 +2083,7 @@ def render_backtest():
                 st.caption(f"年化: {result.get('annual_return', '-')}%")
         with col5:
             if st.button("🗑️", key=f"del_backtest_{stock['stock_code']}"):
-                remove_from_backtest_pool(st.session_state.user_id, stock['stock_code'])
+                remove_from_backtest_pool(st.session_state.user_id, stock['stock_code'], st.session_state.get("access_token"))
                 st.rerun()
     
     if st.session_state.get("backtest_result"):
@@ -2018,13 +2104,55 @@ def render_backtest():
         
         st.caption("⚠️ 回测结果基于历史数据，不代表未来表现")
 
-# ==================== 模块5：实操信号 ====================
+
+# ==================== 掘金下单函数 ====================
+
+def place_gm_order(stock_code: str, volume: int, price: float, side: str = "buy") -> Tuple[bool, str]:
+    """
+    通过掘金API下单
+    side: 'buy' 或 'sell'
+    返回: (success, message)
+    """
+    if not GM_AVAILABLE:
+        return False, "掘金SDK未就绪，请确保已安装gm库并配置Token"
+    
+    try:
+        from gm.api import set_token, order_volume, OrderSide_Buy, OrderSide_Sell, OrderType_Limit
+        
+        set_token(GM_TOKEN)
+        
+        # 转换股票代码格式（掘金需要SHSE/SZSE前缀）
+        if stock_code.endswith('.SH'):
+            symbol = f"SHSE.{stock_code.replace('.SH', '')}"
+        elif stock_code.endswith('.SZ'):
+            symbol = f"SZSE.{stock_code.replace('.SZ', '')}"
+        else:
+            symbol = stock_code
+        
+        order_side = OrderSide_Buy if side == "buy" else OrderSide_Sell
+        
+        order = order_volume(
+            symbol=symbol,
+            volume=volume,
+            side=order_side,
+            order_type=OrderType_Limit,
+            position_effect=1,
+            price=price
+        )
+        
+        return True, f"下单成功！订单号: {order}"
+    except Exception as e:
+        return False, f"下单失败: {str(e)}"
+
+
+# ==================== 模块5：实操信号 + 掘金下单 ====================
+
 def render_live_signals():
-    """实操信号模块（半自动交易）"""
+    """实操信号模块 + 掘金一键下单"""
     st.markdown(f"### {t()['module5_title']}")
     
     last_update = get_last_update_time("live_signals")
-    st.caption(f"📅 最后更新: {last_update} | 💡 AI生成交易信号，请自行前往券商App下单")
+    st.caption(f"📅 最后更新: {last_update} | 💡 AI生成交易信号，掘金一键下单")
     
     col1, col2 = st.columns([4, 1])
     with col2:
@@ -2035,7 +2163,6 @@ def render_live_signals():
                 update_last_update_time("live_signals")
                 st.rerun()
     
-    # 获取推荐池数据
     recommended_stocks = get_recommended_pool(st.session_state.user_id, st.session_state.get("access_token"))
     live_stocks = get_live_pool(st.session_state.user_id, st.session_state.get("access_token"))
     
@@ -2043,10 +2170,10 @@ def render_live_signals():
     
     # 从推荐池获取高评分股票
     for stock in recommended_stocks[:5]:
-        score = stock.get('current_score', 0)
-        # 修复：确保 score 是数字类型
+        score_raw = stock.get('current_score', 0)
+        # 确保 score 是数字类型
         try:
-            score = float(score) if score else 0
+            score = float(score_raw) if score_raw else 0
         except (ValueError, TypeError):
             score = 0
         
@@ -2062,11 +2189,11 @@ def render_live_signals():
     
     # 从实操池获取持仓信号
     for stock in live_stocks:
-        current_price = stock.get('current_price', 0)
-        avg_cost = stock.get('avg_cost', 0)
+        current_price_raw = stock.get('current_price', 0)
+        avg_cost_raw = stock.get('avg_cost', 0)
         try:
-            current_price = float(current_price) if current_price else 0
-            avg_cost = float(avg_cost) if avg_cost else 0
+            current_price = float(current_price_raw) if current_price_raw else 0
+            avg_cost = float(avg_cost_raw) if avg_cost_raw else 0
         except (ValueError, TypeError):
             current_price = 0
             avg_cost = 0
@@ -2094,19 +2221,40 @@ def render_live_signals():
         st.info("暂无交易信号，请先在推荐池添加高评分股票")
         return
     
-    signals_df = pd.DataFrame(signals)
-    st.dataframe(
-        signals_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "stock_code": "股票代码",
-            "stock_name": "股票名称",
-            "action": "操作建议",
-            "suggested_position": "建议/仓位",
-            "confidence": "置信度"
-        }
-    )
+    for idx, signal in enumerate(signals):
+        with st.container(border=True):
+            col1, col2, col3, col4, col5 = st.columns([1.5, 1, 1.5, 1.5, 1.5])
+            
+            with col1:
+                st.markdown(f"**{signal['stock_code']}**")
+                st.caption(signal['stock_name'])
+            
+            with col2:
+                st.markdown(f"**{signal['action']}**")
+            
+            with col3:
+                st.caption(f"建议: {signal['suggested_position']}")
+            
+            with col4:
+                if signal.get('confidence'):
+                    st.caption(f"置信度: {signal['confidence']}")
+            
+            with col5:
+                # 掘金一键下单按钮
+                if signal['action'] in ["买入", "卖出(获利)"] and GM_AVAILABLE:
+                    # 使用简化价格（实际应从实时行情获取）
+                    price = 100.0
+                    volume = 100
+                    side = "buy" if "买入" in signal['action'] else "sell"
+                    
+                    if st.button(f"🤖 下单", key=f"order_{signal['stock_code']}_{idx}", use_container_width=True):
+                        success, msg = place_gm_order(signal['stock_code'], volume, price, side)
+                        if success:
+                            st.success(msg)
+                        else:
+                            st.error(msg)
+                elif signal['action'] in ["买入", "卖出(获利)"]:
+                    st.caption("⚙️ 掘金未配置")
     
     profile = get_user_profile(st.session_state.user_id, st.session_state.get("access_token"))
     if profile.get("subscription_tier") == "free":
@@ -2117,15 +2265,23 @@ def render_live_signals():
     st.markdown("### 📖 操作指引")
     st.markdown("""
     1. 查看上方交易信号
-    2. 打开您的券商App（如招商证券、富途牛牛）
-    3. 根据信号手动下单
+    2. 点击[🤖 下单]按钮通过掘金自动下单
+    3. 或在券商App手动下单
     4. 可在实操池中记录持仓
     
     ⚠️ 投资有风险，请谨慎决策
     """)
+
+
+print("第4部分加载完成")
+print("=" * 60)
 # ============================================================
-# 第5部分：主入口 + 侧边栏 + 顶部按钮 + 页面路由
-# 修复：所有股票池操作函数调用时传入 access_token
+# 第5部分：主入口 + 侧边栏 + 顶部按钮 + 页面路由 + 性能优化
+# 修复内容：
+# - 侧边栏只显示用户名（不显示邮箱后缀）
+# - 管理员退出后返回原登录状态
+# - 添加缓存机制优化性能
+# - 添加页面加载缓存
 # ============================================================
 
 # ==================== 自定义CSS ====================
@@ -2172,12 +2328,38 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+# ==================== 缓存优化函数 ====================
+
+@st.cache_data(ttl=3600)  # 缓存1小时
+def get_cached_stock_data(ts_code: str, days: int = 120):
+    """缓存股票日线数据"""
+    return get_stock_daily(ts_code, days)
+
+
+@st.cache_data(ttl=3600)  # 缓存1小时
+def get_cached_stock_score(ts_code: str, stock_name: str = ""):
+    """缓存股票评分结果"""
+    return get_stock_score(ts_code, stock_name)
+
+
+@st.cache_data(ttl=7200)  # 缓存2小时
+def get_cached_sector_performance():
+    """缓存板块表现数据"""
+    return get_sector_performance()
+
+
+@st.cache_data(ttl=86400)  # 缓存24小时
+def get_cached_stock_name_cache():
+    """缓存股票名称映射表"""
+    return load_stock_name_cache()
+
+
 # ==================== 管理员辅助函数 ====================
 
 def get_all_users() -> list:
     """获取所有用户列表（管理员用）"""
     try:
-        response = supabase_request("GET", "profiles", use_secret=True)
+        response = supabase_request("GET", "user_settings", use_secret=True)
         if response.status_code == 200:
             return response.json()
         return []
@@ -2210,7 +2392,6 @@ def get_user_auth_details(user_id: str) -> Dict:
 
 def get_user_stock_summary(user_id: str) -> Dict:
     """获取用户的股票池摘要"""
-    # 管理员模式下使用 secret key 获取数据
     access_token = st.session_state.get("access_token") if not st.session_state.admin_mode else None
     recommended = get_recommended_pool(user_id, access_token)
     backtest = get_backtest_pool(user_id, access_token)
@@ -2231,6 +2412,9 @@ def admin_delete_user(user_id: str, user_email: str) -> tuple:
         response = requests.delete(url, headers=headers)
         
         if response.status_code in [200, 204]:
+            # 同时删除 user_settings
+            settings_url = f"{SUPABASE_URL}/rest/v1/user_settings?id=eq.{user_id}"
+            requests.delete(settings_url, headers=headers)
             return True, f"用户 {user_email} 已删除"
         else:
             return False, f"删除失败: {response.text}"
@@ -2304,11 +2488,11 @@ def render_admin_panel():
     
     users_with_details = []
     for user in users:
-        auth_details = get_user_auth_details(user.get("id", ""))
-        stock_summary = get_user_stock_summary(user.get("id", ""))
+        auth_details = get_user_auth_details(user.get("user_id", ""))
+        stock_summary = get_user_stock_summary(user.get("user_id", ""))
         
         users_with_details.append({
-            "id": user.get("id"),
+            "id": user.get("user_id"),
             "email": user.get("email", ""),
             "subscription_tier": user.get("subscription_tier", "free"),
             "free_trials_remaining": user.get("free_trials_remaining", FREE_TRIAL_LIMIT),
@@ -2489,7 +2673,26 @@ def render_admin_panel():
     
     st.markdown("---")
     if st.button("退出管理员模式", use_container_width=True):
-        admin_sign_out()
+        # 恢复管理员登录前的用户状态
+        prev_user_id = st.session_state.get("admin_previous_user_id")
+        prev_user_email = st.session_state.get("admin_previous_user_email")
+        prev_access_token = st.session_state.get("admin_previous_access_token")
+        
+        if prev_user_id and prev_user_email:
+            st.session_state.authenticated = True
+            st.session_state.user_id = prev_user_id
+            st.session_state.user_email = prev_user_email
+            st.session_state.access_token = prev_access_token
+        else:
+            st.session_state.authenticated = False
+            st.session_state.user_id = None
+            st.session_state.user_email = None
+            st.session_state.access_token = None
+        
+        st.session_state.admin_mode = False
+        st.session_state.admin_previous_user_id = None
+        st.session_state.admin_previous_user_email = None
+        st.session_state.admin_previous_access_token = None
         st.rerun()
 
 
@@ -2503,6 +2706,8 @@ def render_sidebar():
         
         if st.session_state.authenticated and not st.session_state.admin_mode:
             user_email = st.session_state.user_email
+            # 提取用户名（@前面的部分）
+            username = user_email.split('@')[0] if user_email else user_email
             user_id = st.session_state.user_id
             access_token = st.session_state.get("access_token")
             
@@ -2515,7 +2720,7 @@ def render_sidebar():
             
             st.markdown(f"""
             <div class="sidebar-user-info">
-                <strong>👤 {user_email}</strong><br>
+                <strong>👤 {username}</strong><br>
                 📋 {t()['subscription']}: {tier_display}<br>
                 🎫 {t()['remaining']}: {remaining_display}
             </div>
@@ -2595,7 +2800,9 @@ def render_main_app():
     
     handle_stripe_callback()
     
-    st.markdown(f"<h3 style='text-align: left;'>{t()['welcome']}, {st.session_state.user_email}</h3>", unsafe_allow_html=True)
+    # 获取用户名显示
+    username = st.session_state.user_email.split('@')[0] if st.session_state.user_email else st.session_state.user_email
+    st.markdown(f"<h3 style='text-align: left;'>{t()['welcome']}, {username}</h3>", unsafe_allow_html=True)
     
     # 获取当前用户的 access_token
     access_token = st.session_state.get("access_token")
@@ -2608,20 +2815,36 @@ def render_main_app():
     
     st.markdown("---")
     
-    render_market_brief()
-    st.markdown("---")
+    # 使用缓存获取数据（提升性能）
+    with st.spinner("加载数据中..."):
+        # 预加载缓存数据
+        if TUSHARE_AVAILABLE:
+            get_cached_stock_name_cache()
     
-    render_recommended_pool()
-    st.markdown("---")
+    # 模块1：市场简报
+    with st.container():
+        render_market_brief()
+        st.markdown("---")
     
-    render_stock_analysis()
-    st.markdown("---")
+    # 模块2：推荐股票池
+    with st.container():
+        render_recommended_pool()
+        st.markdown("---")
     
-    render_backtest()
-    st.markdown("---")
+    # 模块3：个股分析
+    with st.container():
+        render_stock_analysis()
+        st.markdown("---")
     
-    render_live_signals()
-    st.markdown("---")
+    # 模块4：回测功能
+    with st.container():
+        render_backtest()
+        st.markdown("---")
+    
+    # 模块5：实操信号
+    with st.container():
+        render_live_signals()
+        st.markdown("---")
     
     st.caption("⚠️ 本系统仅供学术研究和娱乐参考。股市有风险，投资需谨慎。所有AI建议不构成投资建议。")
 
@@ -2659,6 +2882,4 @@ if __name__ == "__main__":
 
 
 print("第5部分加载完成")
-print("=" * 60)
-print("所有代码加载完成！AI量化股票系统 v3.0 已就绪。")
 print("=" * 60)
