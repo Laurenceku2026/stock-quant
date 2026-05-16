@@ -489,13 +489,17 @@ init_gm()
 print("第1部分加载完成")
 print("=" * 60)
 # ============================================================
+# ============================================================
 # 第2部分：用户认证 + Supabase API封装 + 股票池操作 + 次数扣减 + Stripe支付
 # 修复内容：
 # - sign_up: 只创建Auth用户，不创建profile
-# - sign_in: 登录时自动创建user_settings（替代profiles）
+# - sign_in: 登录时自动创建user_settings，保存refresh_token
+# - 新增 Token 自动刷新机制（解决1小时过期问题）
 # - consume_free_trial: 修复次数扣减逻辑
-# - 新增 Stripe 支付函数
+# - Stripe 支付函数
 # ============================================================
+
+import time
 
 # ==================== Supabase API 封装 ====================
 
@@ -522,8 +526,55 @@ def get_supabase_headers(use_secret=False, access_token=None):
     }
 
 
+def refresh_access_token() -> bool:
+    """
+    刷新 access_token
+    返回: True=刷新成功，False=刷新失败
+    """
+    refresh_token = st.session_state.get("refresh_token")
+    if not refresh_token:
+        print("❌ 无 refresh_token，无法刷新")
+        return False
+    
+    try:
+        url = f"{SUPABASE_URL}/auth/v1/token?grant_type=refresh_token"
+        headers = {
+            "apikey": SUPABASE_PUBLISHABLE_KEY,
+            "Content-Type": "application/json"
+        }
+        data = {"refresh_token": refresh_token}
+        response = requests.post(url, headers=headers, json=data)
+        
+        if response.status_code == 200:
+            resp_data = response.json()
+            st.session_state.access_token = resp_data.get("access_token")
+            st.session_state.refresh_token = resp_data.get("refresh_token")
+            st.session_state.token_expiry = time.time() + 3600
+            print("✅ Token 刷新成功")
+            return True
+        else:
+            print(f"❌ Token 刷新失败: {response.text}")
+            return False
+    except Exception as e:
+        print(f"❌ Token 刷新异常: {e}")
+        return False
+
+
+def ensure_valid_token():
+    """确保 token 有效，如果过期则刷新"""
+    token_expiry = st.session_state.get("token_expiry", 0)
+    if time.time() > token_expiry - 60:  # 提前60秒刷新
+        return refresh_access_token()
+    return True
+
+
 def supabase_request(method: str, endpoint: str, data=None, params=None, use_secret=False, access_token=None):
-    """通用的Supabase REST API请求"""
+    """通用的Supabase REST API请求（支持自动token刷新）"""
+    # 如果使用用户token且不是管理员，确保token有效
+    if not use_secret and access_token is None and st.session_state.get("authenticated"):
+        ensure_valid_token()
+        access_token = st.session_state.get("access_token")
+    
     url = f"{SUPABASE_URL}/rest/v1/{endpoint}"
     headers = get_supabase_headers(use_secret, access_token)
     
@@ -540,6 +591,21 @@ def supabase_request(method: str, endpoint: str, data=None, params=None, use_sec
         response = requests.delete(url, headers=headers)
     else:
         raise ValueError(f"Unsupported method: {method}")
+    
+    # 如果 token 过期，尝试刷新后重试一次
+    if response.status_code == 401 and not use_secret:
+        print("Token 可能过期，尝试刷新...")
+        if refresh_access_token():
+            # 重新获取 headers 和 url
+            headers = get_supabase_headers(use_secret, st.session_state.get("access_token"))
+            if method == "GET":
+                response = requests.get(url, headers=headers)
+            elif method == "POST":
+                response = requests.post(url, headers=headers, json=data)
+            elif method == "PATCH":
+                response = requests.patch(url, headers=headers, json=data)
+            elif method == "DELETE":
+                response = requests.delete(url, headers=headers)
     
     return response
 
@@ -584,9 +650,8 @@ def ensure_user_settings(user_id: str, email: str, access_token: str = None) -> 
     返回: True=成功，False=失败
     """
     try:
-        # 查询是否存在
         headers = get_supabase_headers(use_secret=True)
-        check_url = f"{SUPABASE_URL}/rest/v1/user_settings?id=eq.{user_id}"
+        check_url = f"{SUPABASE_URL}/rest/v1/user_settings?user_id=eq.{user_id}"
         check_response = requests.get(check_url, headers=headers)
         
         if check_response.status_code == 200 and check_response.json():
@@ -613,7 +678,7 @@ def ensure_user_settings(user_id: str, email: str, access_token: str = None) -> 
 def sign_in(email: str, password: str) -> tuple:
     """
     用户登录
-    返回: (success, message, user_id, user_email, access_token)
+    返回: (success, message, user_id, user_email, access_token, refresh_token)
     """
     try:
         url = f"{SUPABASE_URL}/auth/v1/token?grant_type=password"
@@ -632,6 +697,7 @@ def sign_in(email: str, password: str) -> tuple:
             user_id = resp_data.get("user", {}).get("id")
             user_email = resp_data.get("user", {}).get("email")
             access_token = resp_data.get("access_token")
+            refresh_token = resp_data.get("refresh_token")
             
             # 确保有 user_settings 记录
             ensure_user_settings(user_id, user_email, access_token)
@@ -639,11 +705,11 @@ def sign_in(email: str, password: str) -> tuple:
             # 更新最后登录时间
             update_user_profile(user_id, {"last_sign_in_at": datetime.now().isoformat()}, access_token)
             
-            return True, "登录成功", user_id, user_email, access_token
+            return True, "登录成功", user_id, user_email, access_token, refresh_token
         else:
-            return False, "邮箱或密码错误", None, None, None
+            return False, "邮箱或密码错误", None, None, None, None
     except Exception as e:
-        return False, f"登录失败: {str(e)}", None, None, None
+        return False, f"登录失败: {str(e)}", None, None, None, None
 
 
 def sign_out():
@@ -652,30 +718,15 @@ def sign_out():
     st.session_state.user_id = None
     st.session_state.user_email = None
     st.session_state.access_token = None
+    st.session_state.refresh_token = None
+    st.session_state.token_expiry = None
     st.session_state.admin_mode = False
     st.rerun()
 
 
 def admin_sign_out():
-    """管理员退出，恢复原用户"""
-    # 恢复管理员登录前的用户状态
-    prev_user_id = st.session_state.get("admin_previous_user_id")
-    prev_user_email = st.session_state.get("admin_previous_user_email")
-    prev_access_token = st.session_state.get("admin_previous_access_token")
-    
-    if prev_user_id and prev_user_email:
-        st.session_state.authenticated = True
-        st.session_state.user_id = prev_user_id
-        st.session_state.user_email = prev_user_email
-        st.session_state.access_token = prev_access_token
-    else:
-        st.session_state.authenticated = False
-        st.session_state.user_id = None
-        st.session_state.user_email = None
-        st.session_state.access_token = None
-    
+    """管理员退出（返回到之前的登录状态）"""
     st.session_state.admin_mode = False
-    # 不清除 admin_previous_*，下次管理员登录时会重新设置
     st.rerun()
 
 
@@ -687,6 +738,7 @@ def check_admin_login(username: str, password: str) -> bool:
 # ==================== 用户资料操作 ====================
 
 def get_user_profile(user_id: str, access_token: str = None) -> dict:
+    """获取用户资料（从 user_settings 表读取）"""
     if not user_id or user_id == "admin":
         return {
             "subscription_tier": "free",
@@ -709,6 +761,7 @@ def get_user_profile(user_id: str, access_token: str = None) -> dict:
                 "last_sign_in_at": data.get("last_sign_in_at")
             }
         else:
+            # 如果 user_settings 中没有记录，创建一条
             email = st.session_state.user_email if hasattr(st.session_state, 'user_email') else "unknown"
             settings_data = {
                 "user_id": user_id,
@@ -718,34 +771,36 @@ def get_user_profile(user_id: str, access_token: str = None) -> dict:
                 "created_at": datetime.now().isoformat()
             }
             insert_url = f"{SUPABASE_URL}/rest/v1/user_settings"
-            requests.post(insert_url, headers=headers, json=settings_data)
+            insert_response = requests.post(insert_url, headers=headers, json=settings_data)
+            print(f"创建 user_settings: {insert_response.status_code}")
+            
             return {
                 "subscription_tier": "free",
                 "free_trials_remaining": FREE_TRIAL_LIMIT,
                 "subscription_expires_at": None,
                 "last_sign_in_at": None
             }
-    except Exception:
-        return {
-            "subscription_tier": "free",
-            "free_trials_remaining": FREE_TRIAL_LIMIT,
-            "subscription_expires_at": None,
-            "last_sign_in_at": None
-        }
+    except Exception as e:
+        print(f"获取用户资料失败: {e}")
+    
+    return {
+        "subscription_tier": "free",
+        "free_trials_remaining": FREE_TRIAL_LIMIT,
+        "subscription_expires_at": None,
+        "last_sign_in_at": None
+    }
+
 
 def update_user_profile(user_id: str, data: dict, access_token: str = None) -> bool:
     """更新用户资料（更新 user_settings 表）"""
     try:
         headers = get_supabase_headers(use_secret=True)
-        # ========== 修改这里：id 改为 user_id ==========
         url = f"{SUPABASE_URL}/rest/v1/user_settings?user_id=eq.{user_id}"
-        # ===========================================
-        
         response = requests.patch(url, headers=headers, json=data)
         return response.status_code in [200, 204]
-    except Exception as e:
-        print(f"更新用户资料失败: {e}")
+    except Exception:
         return False
+
 
 def get_remaining_trials(user_id: str, access_token: str = None) -> int:
     """获取剩余免费次数"""
@@ -754,10 +809,15 @@ def get_remaining_trials(user_id: str, access_token: str = None) -> int:
         return -1  # -1 表示无限
     return profile.get("free_trials_remaining", 0)
 
-#========
+
 def consume_free_trial(user_id: str, access_token: str = None) -> bool:
+    """
+    消耗一次免费次数
+    返回: True=有次数可用，False=次数已用完
+    """
     profile = get_user_profile(user_id, access_token)
     
+    # 专业版用户无限使用
     if profile.get("subscription_tier") == "pro":
         return True
     
@@ -774,6 +834,8 @@ def consume_free_trial(user_id: str, access_token: str = None) -> bool:
     else:
         st.session_state.show_paywall = True
         return False
+
+
 # ==================== 股票池操作 ====================
 
 def get_recommended_pool(user_id: str, access_token: str = None) -> List[Dict]:
@@ -978,7 +1040,6 @@ def create_checkout_session(user_id: str, user_email: str, price_id: str) -> Tup
         import stripe
         stripe.api_key = STRIPE_SECRET_KEY
         
-        # 构建成功URL和取消URL
         base_url = "https://stock-quant-strategy.streamlit.app"
         success_url = f"{base_url}?session_id={{CHECKOUT_SESSION_ID}}"
         cancel_url = f"{base_url}?canceled=true"
@@ -986,17 +1047,11 @@ def create_checkout_session(user_id: str, user_email: str, price_id: str) -> Tup
         session = stripe.checkout.Session.create(
             customer_email=user_email,
             payment_method_types=['card'],
-            line_items=[{
-                'price': price_id,
-                'quantity': 1,
-            }],
+            line_items=[{'price': price_id, 'quantity': 1}],
             mode='subscription',
             success_url=success_url,
             cancel_url=cancel_url,
-            metadata={
-                'user_id': user_id,
-                'price_id': price_id
-            }
+            metadata={'user_id': user_id, 'price_id': price_id}
         )
         
         return session.url, None
@@ -1085,12 +1140,14 @@ def render_login_form():
                     st.warning("请填写邮箱和密码")
                 else:
                     with st.spinner("登录中..."):
-                        success, msg, user_id, user_email, access_token = sign_in(email, password)
+                        success, msg, user_id, user_email, access_token, refresh_token = sign_in(email, password)
                         if success:
                             st.session_state.authenticated = True
                             st.session_state.user_id = user_id
                             st.session_state.user_email = user_email
                             st.session_state.access_token = access_token
+                            st.session_state.refresh_token = refresh_token
+                            st.session_state.token_expiry = time.time() + 3600
                             st.session_state.show_paywall = False
                             st.rerun()
                         else:
@@ -1157,6 +1214,7 @@ def render_admin_login_form():
                     st.session_state.admin_previous_user_id = st.session_state.get("user_id")
                     st.session_state.admin_previous_user_email = st.session_state.get("user_email")
                     st.session_state.admin_previous_access_token = st.session_state.get("access_token")
+                    st.session_state.admin_previous_refresh_token = st.session_state.get("refresh_token")
                     
                     st.session_state.admin_mode = True
                     st.session_state.show_admin_login = False
@@ -1172,7 +1230,7 @@ def render_admin_login_form():
             st.rerun()
 
 
-print("第2部分加载完成")
+print("第2部分加载完成（含Token自动刷新）")
 print("=" * 60)
 # ============================================================
 # 第3部分：评分引擎（技术指标计算、板块热度、个股评分）
@@ -2833,22 +2891,28 @@ def render_admin_panel():
         prev_user_id = st.session_state.get("admin_previous_user_id")
         prev_user_email = st.session_state.get("admin_previous_user_email")
         prev_access_token = st.session_state.get("admin_previous_access_token")
+        prev_refresh_token = st.session_state.get("admin_previous_refresh_token")
         
         if prev_user_id and prev_user_email:
             st.session_state.authenticated = True
             st.session_state.user_id = prev_user_id
             st.session_state.user_email = prev_user_email
             st.session_state.access_token = prev_access_token
+            st.session_state.refresh_token = prev_refresh_token
+            st.session_state.token_expiry = time.time() + 3600  # 重置过期时间
         else:
             st.session_state.authenticated = False
             st.session_state.user_id = None
             st.session_state.user_email = None
             st.session_state.access_token = None
+            st.session_state.refresh_token = None
+            st.session_state.token_expiry = None
         
         st.session_state.admin_mode = False
         st.session_state.admin_previous_user_id = None
         st.session_state.admin_previous_user_email = None
         st.session_state.admin_previous_access_token = None
+        st.session_state.admin_previous_refresh_token = None
         st.rerun()
 
 
