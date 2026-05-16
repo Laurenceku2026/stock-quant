@@ -2727,6 +2727,11 @@ def render_sidebar():
             username = user_email.split('@')[0] if user_email else user_email
             user_id = st.session_state.user_id
             access_token = st.session_state.get("access_token")
+
+            # ===== 调试：打印profile内容 =====
+            profile = get_user_profile(user_id, access_token)
+            st.write(f"🔍 调试信息: profile = {profile}")  # 添加这行
+            # ================================
             
             profile = get_user_profile(user_id, access_token)
             tier = profile.get("subscription_tier", "free")
