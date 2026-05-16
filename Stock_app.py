@@ -668,27 +668,34 @@ def get_remaining_trials(user_id: str, access_token: str = None) -> int:
         return -1  # -1 表示无限
     return profile.get("free_trials_remaining", 0)
 
-
+#========
 def consume_free_trial(user_id: str, access_token: str = None) -> bool:
     """
     消耗一次免费次数
     返回: True=有次数可用，False=次数已用完
     """
+    # 直接获取最新 profile
     profile = get_user_profile(user_id, access_token)
     
     # 专业版用户无限使用
     if profile.get("subscription_tier") == "pro":
         return True
     
+    # 获取剩余次数
     remaining = profile.get("free_trials_remaining", 0)
+    try:
+        remaining = int(remaining) if remaining else 0
+    except (ValueError, TypeError):
+        remaining = 0
     
     if remaining > 0:
-        success = update_user_profile(user_id, {"free_trials_remaining": remaining - 1}, access_token)
+        # 更新数据库：剩余次数减1
+        new_remaining = remaining - 1
+        success = update_user_profile(user_id, {"free_trials_remaining": new_remaining}, access_token)
         return success
     else:
         st.session_state.show_paywall = True
         return False
-
 
 # ==================== 股票池操作 ====================
 
@@ -2727,18 +2734,22 @@ def render_sidebar():
             username = user_email.split('@')[0] if user_email else user_email
             user_id = st.session_state.user_id
             access_token = st.session_state.get("access_token")
-
-            # ===== 调试：打印profile内容 =====
-            profile = get_user_profile(user_id, access_token)
-            st.write(f"🔍 调试信息: profile = {profile}")  # 添加这行
-            # ================================
             
+            # 直接从 get_user_profile 获取最新数据
             profile = get_user_profile(user_id, access_token)
+            
+            # 从 profile 中直接获取值，不要调用其他函数
             tier = profile.get("subscription_tier", "free")
-            remaining = get_remaining_trials(user_id, access_token)
+            remaining = profile.get("free_trials_remaining", 0)
+            
+            # 确保 remaining 是数字
+            try:
+                remaining = int(remaining) if remaining else 0
+            except (ValueError, TypeError):
+                remaining = 0
             
             tier_display = "💎 专业版" if tier == "pro" else "🔒 免费版"
-            remaining_display = "∞" if remaining == -1 else remaining
+            remaining_display = "∞" if remaining == -1 else str(remaining)
             
             st.markdown(f"""
             <div class="sidebar-user-info">
@@ -2748,6 +2759,7 @@ def render_sidebar():
             </div>
             """, unsafe_allow_html=True)
             
+            # 升级按钮（仅免费用户）
             if tier == "free":
                 if st.button("💎 " + t()["upgrade"], key="sidebar_upgrade", use_container_width=True):
                     st.session_state.show_paywall = True
