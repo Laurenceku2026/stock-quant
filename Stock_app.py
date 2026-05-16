@@ -1919,6 +1919,7 @@ def render_recommended_pool():
     last_update = get_last_update_time("recommended_pool")
     st.caption(f"📅 最后更新: {last_update} | 📌 最多{MAX_RECOMMENDED_STOCKS}只股票 | 点击[分析]可查看详细评分")
     
+    # 操作栏
     col1, col2, col3, col4 = st.columns([2, 1, 1, 2])
     with col1:
         new_stock = st.text_input(
@@ -1955,26 +1956,58 @@ def render_recommended_pool():
             st.warning("免费次数已用完，请升级到专业版")
             return
         with st.spinner("正在刷新推荐池..."):
-            # 清空现有推荐池中的AI推荐（保留用户手动添加的）
+            # 获取当前推荐池
             stocks = get_recommended_pool(st.session_state.user_id, st.session_state.get("access_token"))
-            for stock in stocks:
-                if stock.get("source") == "ai":
-                    remove_from_recommended_pool(st.session_state.user_id, stock["stock_code"], st.session_state.get("access_token"))
+            
+            # 记录原有AI推荐的数量和内容（用于降级）
+            ai_stocks = [s for s in stocks if s.get("source") == "ai"]
+            
+            # 清空现有推荐池中的AI推荐（物理删除）
+            for stock in ai_stocks:
+                supabase_request(
+                    "DELETE", 
+                    "recommended_pool",
+                    params=f"id=eq.{stock['id']}",
+                    access_token=st.session_state.get("access_token")
+                )
+            
             # 自动推荐Top10
-            auto_recommend_top10(st.session_state.user_id, st.session_state.get("access_token"))
+            top10 = auto_recommend_top10(st.session_state.user_id, st.session_state.get("access_token"))
+            
+            # 降级方案：如果自动推荐失败，恢复原有的AI推荐
+            if not top10 and ai_stocks:
+                st.warning("自动推荐暂时不可用（Tushare限制），已保留原有推荐")
+                for stock in ai_stocks:
+                    # 恢复被删除的AI推荐（重新插入）
+                    add_to_recommended_pool(
+                        st.session_state.user_id, 
+                        stock['stock_code'], 
+                        stock.get('stock_name', ''), 
+                        source="ai", 
+                        score=stock.get('current_score', 50),
+                        access_token=st.session_state.get("access_token")
+                    )
+            elif not top10:
+                st.info("暂无新的推荐股票，请稍后再试或手动添加")
+            else:
+                st.success(f"已更新推荐池，新增 {len(top10)} 只推荐股票")
+            
         update_last_update_time("recommended_pool")
         st.rerun()
     
+    # 获取推荐池数据
     stocks = get_recommended_pool(st.session_state.user_id, st.session_state.get("access_token"))
     
     if not stocks:
         st.info("暂无股票，请点击[添加]按钮添加股票，或点击[刷新]获取AI推荐")
         return
     
+    # 批量计算得分
     with st.spinner("正在计算股票评分..."):
         stock_list = [{"code": s["stock_code"], "name": s.get("stock_name", "")} for s in stocks]
         scored_stocks = score_batch_stocks(stock_list)
     
+    # 显示股票列表
     for idx, stock in enumerate(scored_stocks):
         with st.container(border=True):
             col1, col2, col3, col4, col5, col6 = st.columns([1.5, 1, 1, 2, 1.5, 1])
@@ -2006,20 +2039,37 @@ def render_recommended_pool():
             
             with col6:
                 if st.button("🗑️", key=f"del_{stock['stock_code']}_{idx}"):
-                    remove_from_recommended_pool(st.session_state.user_id, stock['stock_code'], st.session_state.get("access_token"))
+                    # 物理删除
+                    supabase_request(
+                        "DELETE", 
+                        "recommended_pool",
+                        params=f"user_id=eq.{st.session_state.user_id}&stock_code=eq.{stock['stock_code']}",
+                        access_token=st.session_state.get("access_token")
+                    )
                     st.rerun()
     
+    # 批量操作
     col1, col2, col3 = st.columns([1, 1, 4])
     with col1:
         if st.button("🗑️ 清空所有", key="clear_pool", use_container_width=True):
             for s in stocks:
-                remove_from_recommended_pool(st.session_state.user_id, s["stock_code"], st.session_state.get("access_token"))
+                supabase_request(
+                    "DELETE", 
+                    "recommended_pool",
+                    params=f"id=eq.{s['id']}",
+                    access_token=st.session_state.get("access_token")
+                )
             st.rerun()
     with col2:
         if st.button("📋 移到回测池", key="move_to_backtest", use_container_width=True):
             for s in stocks:
                 add_to_backtest_pool(st.session_state.user_id, s["stock_code"], s.get("stock_name", ""), st.session_state.get("access_token"))
-                remove_from_recommended_pool(st.session_state.user_id, s["stock_code"], st.session_state.get("access_token"))
+                supabase_request(
+                    "DELETE", 
+                    "recommended_pool",
+                    params=f"id=eq.{s['id']}",
+                    access_token=st.session_state.get("access_token")
+                )
             st.success(f"已将{len(stocks)}只股票移到回测池")
             st.rerun()
 
