@@ -1977,30 +1977,8 @@ def run_real_backtest(
     position_pct: float = 100,
     max_positions: int = 3
 ) -> Dict:
-    # ===== 使用 st.write 显示调试信息（会显示在页面上）=====
-    st.write("=" * 50)
-    st.write("🔍 回测函数开始")
-    st.write(f"🔍 stock_codes: {stock_codes}")
-    st.write(f"🔍 start_date: {start_date}, 类型: {type(start_date)}")
-    st.write(f"🔍 end_date: {end_date}, 类型: {type(end_date)}")
-    st.write("=" * 50)
-    # ===================================================
-    """
-    真实回测函数（修复日期比较错误）
+    """真实回测函数（修复日期比较错误）"""
     
-    参数:
-        stock_codes: 股票代码列表
-        start_date: 开始日期 (YYYYMMDD)
-        end_date: 结束日期 (YYYYMMDD)
-        initial_capital: 初始资金
-        buy_threshold: 买入阈值（综合得分 >= 此值时买入）
-        sell_threshold: 卖出阈值（综合得分 <= 此值时卖出）
-        position_pct: 单笔仓位百分比
-        max_positions: 最大持仓数量
-    
-    返回:
-        回测结果字典
-    """
     if not stock_codes:
         return {
             "success": False,
@@ -2013,6 +1991,9 @@ def run_real_backtest(
         for ts_code in stock_codes:
             df = get_stock_daily(ts_code, days=500)
             if not df.empty:
+                # 确保 date 列是 datetime 类型
+                if not pd.api.types.is_datetime64_any_dtype(df['date']):
+                    df['date'] = pd.to_datetime(df['date'])
                 stock_data[ts_code] = df
         
         if not stock_data:
@@ -2021,18 +2002,19 @@ def run_real_backtest(
                 "error": "无法获取历史数据，请检查Tushare连接"
             }
         
-        # ========== 2. 确定回测日期范围（统一转换为datetime对象） ==========
+        # 2. 确定回测日期范围（统一转换为datetime对象）
         all_dates = []
         for df in stock_data.values():
             for d in df['date'].tolist():
-                # 统一转换为datetime对象
-                if isinstance(d, str):
+                if isinstance(d, pd.Timestamp):
+                    all_dates.append(d.to_pydatetime())
+                elif isinstance(d, datetime):
+                    all_dates.append(d)
+                elif isinstance(d, str):
                     try:
                         all_dates.append(datetime.strptime(d, '%Y-%m-%d'))
                     except:
-                        all_dates.append(d)
-                else:
-                    all_dates.append(d)
+                        pass
         
         # 去重并排序
         all_dates = sorted(set(all_dates))
@@ -2043,7 +2025,7 @@ def run_real_backtest(
                 "error": "历史数据不足，需要至少10个交易日"
             }
         
-        # ========== 3. 过滤日期范围（统一使用datetime比较） ==========
+        # 3. 过滤日期范围
         start_datetime = None
         end_datetime = None
         
@@ -2088,7 +2070,7 @@ def run_real_backtest(
             # 获取当日各股票的价格和评分
             available_stocks = []
             for ts_code, df in stock_data.items():
-                # 获取当日数据（日期比较使用datetime）
+                # 获取当日数据
                 day_data = df[df['date'] == current_date]
                 if day_data.empty:
                     continue
