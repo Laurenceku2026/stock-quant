@@ -4404,16 +4404,57 @@ def render_top_buttons():
 # ==================== 主页面 ====================
 
 def render_main_app():
-    """渲染主页面（5个模块 + 板块管理）"""
-    # ===== 处理 Stripe 支付成功回调（参考TechLife Portal）=====
-    handle_stripe_callback()
-    #------------------
+    """渲染主页面（5个模块）"""
+    
+    # ===== 手动验证 Stripe 支付 =====
+    query_params = st.query_params
+    if "session_id" in query_params:
+        session_id = query_params["session_id"]
+        
+        st.warning("🔔 检测到支付会话，请点击下方按钮完成验证")
+        st.info(f"会话ID: {session_id[:30]}...")
+        
+        if st.button("✅ 手动验证支付并升级", type="primary", use_container_width=True):
+            try:
+                import stripe
+                stripe.api_key = STRIPE_SECRET_KEY
+                session = stripe.checkout.Session.retrieve(session_id)
+                
+                if session.payment_status == "paid":
+                    user_id = session.metadata.get("user_id")
+                    
+                    if user_id and user_id != "admin":
+                        headers = get_supabase_headers(use_secret=True)
+                        url = f"{SUPABASE_URL}/rest/v1/user_settings?user_id=eq.{user_id}"
+                        data = {"subscription_tier": "pro"}
+                        response = requests.patch(url, headers=headers, json=data)
+                        
+                        if response.status_code in [200, 204]:
+                            st.success("✅ 支付验证成功！您已是专业版用户")
+                            st.balloons()
+                            st.query_params.clear()
+                            time.sleep(2)
+                            st.rerun()
+                        else:
+                            st.error(f"更新失败: {response.text}")
+                    else:
+                        st.warning("用户信息验证失败，请重新登录")
+                else:
+                    st.warning(f"支付状态: {session.payment_status}，未完成")
+            except Exception as e:
+                st.error(f"验证失败: {e}")
+        
+        st.markdown("---")
+    # =================================
+    
     if st.session_state.get("show_paywall", False):
         show_paywall()
         return
     
-    handle_stripe_callback()
+    handle_stripe_callback()  # 保留原有回调，两者并存
     
+    # ... 其余代码不变    
+      
     # 板块管理页面
     if st.session_state.get("show_sector_management", False):
         render_sector_management()
