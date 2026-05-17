@@ -1190,7 +1190,9 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
     """自动推荐Top10股票（基于技术指标评分）"""
     st.write("🔍 ===== 调试开始 =====")
     st.write(f"🔍 TUSHARE_AVAILABLE = {TUSHARE_AVAILABLE}")
+   
     if not TUSHARE_AVAILABLE:
+        st.error("❌ Tushare不可用")
         return []
     
     all_stocks = []
@@ -1199,6 +1201,8 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
             stock_name = sector_info["names"][i] if i < len(sector_info["names"]) else ts_code
             all_stocks.append({"code": ts_code, "name": stock_name, "sector": sector_name})
     
+    st.write(f"🔍 候选股票总数: {len(all_stocks)}")
+    
     seen = set()
     unique_stocks = []
     for stock in all_stocks:
@@ -1206,8 +1210,11 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
             seen.add(stock["code"])
             unique_stocks.append(stock)
     
+    st.write(f"🔍 去重后: {len(unique_stocks)} 只")
+    
     scored_stocks = []
-    for stock in unique_stocks:
+    for idx, stock in enumerate(unique_stocks):
+        st.write(f"🔍 正在计算 {idx+1}/{len(unique_stocks)}: {stock['code']}")
         score_result = get_stock_score(stock["code"], stock["name"])
         scored_stocks.append({
             "code": stock["code"],
@@ -1221,11 +1228,20 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
     scored_stocks.sort(key=lambda x: x["score"], reverse=True)
     top10 = scored_stocks[:10]
     
+    # ===== 显示Top10结果 =====
+    st.write("🔍 **推荐Top10:**")
+    for i, stock in enumerate(top10):
+        st.write(f"   {i+1}. {stock['code']} ({stock['name']}) - 得分: {stock['score']}")
+    # =========================
+    
     for stock in top10:
-        add_to_recommended_pool(user_id, stock["code"], stock["name"], source="ai", score=stock["score"], access_token=access_token)
+        success, msg = add_to_recommended_pool(
+            user_id, stock["code"], stock["name"], source="ai", 
+            score=stock["score"], access_token=access_token
+        )
+        st.write(f"   添加 {stock['code']}: {success} - {msg}")
     
     return top10
-
 
 # ==================== 板块操作函数 ====================
 
