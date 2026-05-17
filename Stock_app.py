@@ -1326,22 +1326,14 @@ def delete_user_sector(user_id: str, sector_id: str, access_token: str = None) -
 # ==================== Stripe 支付函数 ====================
 
 def create_checkout_session(user_id: str, user_email: str, price_id: str) -> Tuple[Optional[str], Optional[str]]:
-    """创建Stripe Checkout Session"""
-    if not STRIPE_SECRET_KEY:
-        return None, "Stripe密钥未配置"
-    
     try:
         import stripe
         stripe.api_key = STRIPE_SECRET_KEY
         
-        # 获取当前应用的基础URL
-        # 如果是本地开发
-        # base_url = "http://localhost:8501"
-        # 如果是Streamlit Cloud
         base_url = "https://stock-quant-strategy.streamlit.app"
         
-        # 关键：success_url 必须包含 session_id 参数
-        success_url = f"{base_url}?session_id={{CHECKOUT_SESSION_ID}}"
+        # 关键：在 success_url 中传递用户信息，确保支付完成后能识别用户
+        success_url = f"{base_url}?session_id={{CHECKOUT_SESSION_ID}}&user_id={user_id}&email={user_email}"
         cancel_url = f"{base_url}?canceled=true"
         
         session = stripe.checkout.Session.create(
@@ -1357,87 +1349,89 @@ def create_checkout_session(user_id: str, user_email: str, price_id: str) -> Tup
                 'price_id': price_id
             }
         )
-        
         return session.url, None
     except Exception as e:
         return None, str(e)
 
 
 def handle_stripe_callback():
-    # 最简单的测试
-    st.write("🔍 测试1: 进入函数")
+    """使用 HTTP 请求验证 Stripe 支付（不依赖 stripe 库）"""
+    import requests
+    import base64
+    import json
     
-    try:
-        import stripe
-        st.write("🔍 测试2: stripe 导入成功")
-        st.write(f"🔍 测试3: stripe 版本 = {stripe.__version__}")
-    except Exception as e:
-        st.write(f"🔍 测试2失败: {e}")
-    """处理 Stripe 支付成功回调"""
-    
-    # 获取URL参数
     query_params = st.query_params
-    
-    # 调试：显示所有参数
-    st.write("🔍 ===== 调试开始 =====")
-    st.write(f"🔍 query_params: {dict(query_params)}")
     
     if "session_id" in query_params:
         session_id = query_params["session_id"]
-        st.write(f"🔍 session_id: {session_id}")
         
-        # 防止重复处理
-        if st.session_state.get("payment_processed", False):
-            st.write("🔍 已处理过，跳过")
-            return
+        # 显示手动验证按钮
+        st.warning("🔔 检测到支付会话，请点击按钮完成验证")
+        st.info(f"会话ID: {session_id[:30]}...")
         
-        try:
-            import stripe
-            st.write("🔍 stripe 模块导入成功")
-            
-            # 设置 API Key
-            stripe.api_key = STRIPE_SECRET_KEY
-            st.write(f"🔍 API Key 已设置，长度: {len(STRIPE_SECRET_KEY)}")
-            
-            # 获取 session
-            session = stripe.checkout.Session.retrieve(session_id)
-            st.write(f"🔍 session 获取成功")
-            st.write(f"🔍 payment_status: {session.payment_status}")
-            
-            if session.payment_status == "paid":
-                st.write("🔍 支付状态为 paid")
-                user_id = session.metadata.get("user_id")
-                st.write(f"🔍 user_id: {user_id}")
-                
-                if user_id and user_id != "admin":
-                    # 更新数据库
-                    headers = get_supabase_headers(use_secret=True)
-                    url = f"{SUPABASE_URL}/rest/v1/user_settings?user_id=eq.{user_id}"
-                    data = {"subscription_tier": "pro"}
-                    response = requests.patch(url, headers=headers, json=data)
-                    st.write(f"🔍 更新状态码: {response.status_code}")
+        if st.button("✅ 手动验证支付并升级", type="primary"):
+            with st.spinner("正在验证..."):
+                try:
+                    # 使用 Basic 认证调用 Stripe API
+                    auth_str = f"{STRIPE_SECRET_KEY}:"
+                    auth_bytes = auth_str.encode('ascii')
+                    auth_b64 = base64.b64encode(auth_bytes).decode('ascii')
                     
-                    if response.status_code in [200, 204]:
-                        st.success("✅ 支付成功！您已是专业版用户")
-                        st.balloons()
-                        st.session_state.payment_processed = True
-                        st.query_params.clear()
-                        time.sleep(2)
-                        st.rerun()
+                    headers = {
+                        "Authorization": f"Basic {auth_b64}",
+                        "Content-Type": "application/x-www-form-urlencoded"
+                    }
+                    
+                    url = f"https://api.stripe.com/v1/checkout/sessions/{session_id}"
+                    response = requests.get(url, headers=headers)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        
+                        if data.get("payment_status") == "paid":
+                            # 从 metadata 获取用户信息
+                            user_id = data.get("metadata", {}).get("user_id")
+                            user_email = data.get("customer_email") or data.get("metadata", {}).get("user_email")
+                            
+                            if not user_id and user_email:
+                                # 通过邮箱查找用户
+                                users_resp = supabase_request("GET", "user_settings", use_secret=True)
+                                if users_resp.status_code == 200:
+                                    for u in users_resp.json():
+                                        if u.get("email") == user_email:
+                                            user_id = u.get("user_id")
+                                            break
+                            
+                            if user_id and user_id != "admin":
+                                # 更新数据库
+                                headers_patch = get_supabase_headers(use_secret=True)
+                                url_patch = f"{SUPABASE_URL}/rest/v1/user_settings?user_id=eq.{user_id}"
+                                patch_response = requests.patch(
+                                    url_patch, 
+                                    headers=headers_patch, 
+                                    json={"subscription_tier": "pro"}
+                                )
+                                
+                                if patch_response.status_code in [200, 204]:
+                                    st.success("✅ 支付验证成功！您已是专业版用户")
+                                    st.balloons()
+                                    # 更新 session
+                                    if st.session_state.get("user_id") == user_id:
+                                        st.session_state.subscription_tier = "pro"
+                                    st.query_params.clear()
+                                    time.sleep(2)
+                                    st.rerun()
+                                else:
+                                    st.error(f"更新失败: {patch_response.text}")
+                            else:
+                                st.error("无法识别用户，请重新登录后重试")
+                        else:
+                            st.warning(f"支付状态: {data.get('payment_status')}，请完成支付")
                     else:
-                        st.error(f"更新失败: {response.text}")
-                else:
-                    st.warning("支付成功，但用户信息验证失败")
-            else:
-                st.info(f"支付未完成: {session.payment_status}")
-                
-        except Exception as e:
-            st.error(f"验证失败: {type(e).__name__} - {e}")
-            st.write(f"🔍 完整错误: {e}")
-    else:
-        st.write("🔍 没有 session_id 参数")
-    
-    st.write("🔍 ===== 调试结束 =====")
+                        st.error(f"API请求失败: {response.status_code}")
+                        
+                except Exception as e:
+                    st.error(f"验证失败: {e}")
 
 # ==================== 数据解析函数 ====================
 
@@ -4414,7 +4408,17 @@ def render_top_buttons():
 
 def render_main_app():
     """渲染主页面（5个模块）"""
+    # 处理支付回调前，先恢复可能的登录状态
+    query_params = st.query_params
+    if "user_id" in query_params and "email" in query_params:
+        st.session_state.authenticated = True
+        st.session_state.user_id = query_params["user_id"]
+        st.session_state.user_email = query_params["email"]
+        # 清除URL参数，避免重复
+        st.query_params.clear()
+        st.rerun()
     
+    handle_stripe_callback()
     # ===== 手动验证 Stripe 支付 =====
     query_params = st.query_params
     if "session_id" in query_params:
