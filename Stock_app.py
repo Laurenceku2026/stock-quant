@@ -1977,13 +1977,14 @@ def run_real_backtest(
     position_pct: float = 100,
     max_positions: int = 3
 ) -> Dict:
-    # 在函数开头添加
-    print("=" * 50)
-    print("回测函数开始")
-    print(f"stock_codes: {stock_codes}")
-    print(f"start_date: {start_date}, type: {type(start_date)}")
-    print(f"end_date: {end_date}, type: {type(end_date)}")
-    print("=" * 50)
+    # ===== 使用 st.write 显示调试信息（会显示在页面上）=====
+    st.write("=" * 50)
+    st.write("🔍 回测函数开始")
+    st.write(f"🔍 stock_codes: {stock_codes}")
+    st.write(f"🔍 start_date: {start_date}, 类型: {type(start_date)}")
+    st.write(f"🔍 end_date: {end_date}, 类型: {type(end_date)}")
+    st.write("=" * 50)
+    # ===================================================
     """
     真实回测函数（修复日期比较错误）
     
