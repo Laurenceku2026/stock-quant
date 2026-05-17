@@ -1360,17 +1360,10 @@ def create_checkout_session(user_id: str, user_email: str, price_id: str) -> Tup
 
 
 def handle_stripe_callback():
-    """处理Stripe支付成功回调"""
-    # 获取URL参数
+    """处理 Stripe 支付成功回调（参考TechLife Portal）"""
     query_params = st.query_params
-    
     if "session_id" in query_params:
         session_id = query_params["session_id"]
-        
-        # 防止重复处理
-        if st.session_state.get("payment_processed", False):
-            return
-        
         try:
             import stripe
             stripe.api_key = STRIPE_SECRET_KEY
@@ -1378,38 +1371,29 @@ def handle_stripe_callback():
             
             if session.payment_status == "paid":
                 user_id = session.metadata.get("user_id")
-                user_email = session.metadata.get("user_email")
                 
-                # 更新用户订阅
+                # 参考TechLife Portal：直接使用 supabase_patch 更新
                 if user_id and user_id != "admin":
-                    # 更新数据库
                     headers = get_supabase_headers(use_secret=True)
                     url = f"{SUPABASE_URL}/rest/v1/user_settings?user_id=eq.{user_id}"
                     data = {"subscription_tier": "pro"}
                     response = requests.patch(url, headers=headers, json=data)
                     
                     if response.status_code in [200, 204]:
-                        st.success(f"✅ 支付成功！用户 {user_email} 已是专业版")
+                        st.success("✅ 支付成功！您已是专业版用户")
                         st.balloons()
-                        
-                        # 更新当前session
-                        if st.session_state.get("user_id") == user_id:
-                            st.session_state.authenticated = True
-                            st.session_state.subscription_tier = "pro"
-                        
-                        st.session_state.payment_processed = True
+                        # 更新 session_state
+                        st.session_state.subscription_tier = "pro"
                         st.query_params.clear()
-                        time.sleep(2)
                         st.rerun()
                     else:
-                        st.error(f"更新用户状态失败: {response.text}")
+                        st.error(f"更新失败: {response.text}")
                 else:
                     st.warning("支付成功，但用户信息验证失败")
             else:
-                st.info("支付未完成")
-                
+                st.info("支付未完成，请完成支付后刷新页面")
         except Exception as e:
-            st.error(f"验证支付状态失败: {e}")
+            st.error(f"验证失败: {e}")
 
 
 # ==================== 数据解析函数 ====================
@@ -4387,6 +4371,9 @@ def render_top_buttons():
 
 def render_main_app():
     """渲染主页面（5个模块 + 板块管理）"""
+    # ===== 处理 Stripe 支付成功回调（参考TechLife Portal）=====
+    handle_stripe_callback()
+    #------------------
     if st.session_state.get("show_paywall", False):
         show_paywall()
         return
@@ -4458,7 +4445,6 @@ def main():
     init_session_state()
     
     # ===== 重要：在任何页面渲染之前处理支付回调 =====
-    handle_stripe_callback()
     # ================================================
     
     # 加载缓存
