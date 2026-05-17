@@ -1086,13 +1086,11 @@ def add_to_recommended_pool(user_id: str, stock_code: str, stock_name: str,
 
 
 def remove_from_recommended_pool(user_id: str, stock_code: str, access_token: str = None) -> tuple:
-    """从推荐池删除股票"""
+    """从推荐池删除股票（物理删除）"""
     try:
-        data = {"is_deleted": True}
         response = supabase_request(
-            "PATCH", 
-            "recommended_pool", 
-            data=data,
+            "DELETE", 
+            "recommended_pool",
             params=f"user_id=eq.{user_id}&stock_code=eq.{stock_code}",
             access_token=access_token
         )
