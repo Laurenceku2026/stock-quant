@@ -2202,7 +2202,7 @@ def run_backtest_simple(stock_codes: List[str]) -> Dict:
 
 
 def show_paywall():
-    """显示付费墙"""
+    """显示付费墙（红底白字按钮）"""
     st.markdown("---")
     st.error("🔒 您的免费使用次数已用完")
     
@@ -2220,34 +2220,85 @@ def show_paywall():
     """)
     
     col1, col2 = st.columns(2)
+    
     with col1:
-        if st.button(t()["monthly"], use_container_width=True, type="primary"):
+        # 月付按钮 - 点击后生成支付链接
+        if st.button("💎 月付 $29/月", key="monthly_btn", use_container_width=True):
             url, error = create_checkout_session(
                 st.session_state.user_id, 
                 st.session_state.user_email, 
                 STRIPE_PRICE_MONTHLY
             )
             if url:
-                st.markdown(f'<a href="{url}" target="_blank">点击前往Stripe支付（月付$29）</a>', unsafe_allow_html=True)
+                st.session_state.payment_url = url
+                st.session_state.payment_type = "monthly"
+                st.rerun()
             else:
                 st.error(f"创建支付会话失败: {error}")
+        
+        # 显示支付链接按钮（红底白字）
+        if st.session_state.get("payment_url") and st.session_state.get("payment_type") == "monthly":
+            st.markdown(f'''
+            <a href="{st.session_state.payment_url}" target="_blank" style="
+                display: block;
+                width: 100%;
+                padding: 0.6rem;
+                background-color: #ff4b4b;
+                color: white;
+                text-align: center;
+                text-decoration: none;
+                border-radius: 0.5rem;
+                font-weight: bold;
+                font-size: 1rem;
+                margin-top: 0.5rem;
+                border: none;
+                cursor: pointer;
+            " onmouseover="this.style.backgroundColor='#e04343'" onmouseout="this.style.backgroundColor='#ff4b4b'">
+                💳 前往Stripe支付（月付$29）
+            </a>
+            ''', unsafe_allow_html=True)
     
     with col2:
-        if st.button(t()["yearly"], use_container_width=True, type="primary"):
+        # 年付按钮 - 点击后生成支付链接
+        if st.button("💎 年付 $299/年", key="yearly_btn", use_container_width=True):
             url, error = create_checkout_session(
                 st.session_state.user_id, 
                 st.session_state.user_email, 
                 STRIPE_PRICE_YEARLY
             )
             if url:
-                st.markdown(f'<a href="{url}" target="_blank">点击前往Stripe支付（年付$299）</a>', unsafe_allow_html=True)
+                st.session_state.payment_url = url
+                st.session_state.payment_type = "yearly"
+                st.rerun()
             else:
                 st.error(f"创建支付会话失败: {error}")
+        
+        # 显示支付链接按钮（红底白字）
+        if st.session_state.get("payment_url") and st.session_state.get("payment_type") == "yearly":
+            st.markdown(f'''
+            <a href="{st.session_state.payment_url}" target="_blank" style="
+                display: block;
+                width: 100%;
+                padding: 0.6rem;
+                background-color: #ff4b4b;
+                color: white;
+                text-align: center;
+                text-decoration: none;
+                border-radius: 0.5rem;
+                font-weight: bold;
+                font-size: 1rem;
+                margin-top: 0.5rem;
+                border: none;
+                cursor: pointer;
+            " onmouseover="this.style.backgroundColor='#e04343'" onmouseout="this.style.backgroundColor='#ff4b4b'">
+                💳 前往Stripe支付（年付$299）
+            </a>
+            ''', unsafe_allow_html=True)
     
     if st.button("返回", use_container_width=True):
         st.session_state.show_paywall = False
+        st.session_state.payment_url = None
         st.rerun()
-
 # ==================== 真实回测函数（修复日期比较错误） ====================
 
 def calculate_annual_return(total_return: float, days: int) -> float:
