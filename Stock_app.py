@@ -1212,8 +1212,6 @@ def get_live_pool(user_id: str, access_token: str = None) -> List[Dict]:
 
 def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
     """自动推荐Top10股票（基于技术指标评分）"""
-    st.write("🔍 ===== 调试开始 =====")
-    st.write(f"🔍 TUSHARE_AVAILABLE = {TUSHARE_AVAILABLE}")
    
     if not TUSHARE_AVAILABLE:
         st.error("❌ Tushare不可用")
@@ -1253,7 +1251,6 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
     top10 = scored_stocks[:10]
     
     # ===== 显示Top10结果 =====
-    st.write("🔍 **推荐Top10:**")
     for i, stock in enumerate(top10):
         st.write(f"   {i+1}. {stock['code']} ({stock['name']}) - 得分: {stock['score']}")
     # =========================
