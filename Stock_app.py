@@ -1021,10 +1021,11 @@ def update_user_profile(user_id: str, data: dict, access_token: str = None) -> b
         headers = get_supabase_headers(use_secret=True)
         url = f"{SUPABASE_URL}/rest/v1/user_settings?user_id=eq.{user_id}"
         response = requests.patch(url, headers=headers, json=data)
+        print(f"更新用户资料: user_id={user_id}, data={data}, status={response.status_code}")
         return response.status_code in [200, 204]
-    except Exception:
+    except Exception as e:
+        print(f"更新用户资料失败: {e}")
         return False
-
 
 def get_remaining_trials(user_id: str, access_token: str = None) -> int:
     """获取剩余免费次数"""
@@ -1357,6 +1358,11 @@ def handle_stripe_callback():
     
     if "session_id" in query_params:
         session_id = query_params["session_id"]
+        
+        # 防止重复处理
+        if st.session_state.get("payment_processed", False):
+            return
+        
         try:
             import stripe
             stripe.api_key = STRIPE_SECRET_KEY
@@ -1364,18 +1370,48 @@ def handle_stripe_callback():
             
             if session.payment_status == "paid":
                 user_id = session.metadata.get("user_id")
+                user_email = session.customer_email
+                
                 if user_id and user_id != "admin":
-                    update_user_profile(user_id, {"subscription_tier": "pro"})
-                    st.success("✅ 支付成功！您已是专业版用户")
-                    st.balloons()
-                    st.query_params.clear()
-                    st.rerun()
+                    # 更新用户订阅
+                    success = update_user_profile(user_id, {"subscription_tier": "pro"})
+                    
+                    if success:
+                        # 同时更新当前 session_state
+                        if st.session_state.get("user_id") == user_id:
+                            st.session_state.authenticated = True
+                            st.session_state.user_id = user_id
+                            st.session_state.user_email = user_email
+                            st.session_state.subscription_tier = "pro"
+                        
+                        st.session_state.payment_processed = True
+                        st.success("✅ 支付成功！您已是专业版用户")
+                        st.balloons()
+                        st.query_params.clear()
+                        time.sleep(2)
+                        st.rerun()
+                    else:
+                        st.error("支付成功，但更新用户状态失败，请联系管理员")
                 else:
-                    st.warning("支付成功，但用户信息验证失败，请联系管理员")
+                    # 尝试通过邮箱查找用户
+                    if user_email:
+                        users = get_all_users()
+                        for u in users:
+                            if u.get("email") == user_email:
+                                update_user_profile(u["user_id"], {"subscription_tier": "pro"})
+                                st.success(f"✅ 支付成功！用户 {user_email} 已是专业版")
+                                st.balloons()
+                                st.query_params.clear()
+                                time.sleep(2)
+                                st.rerun()
+                                return
+                    st.warning("支付成功，但用户信息验证失败，请登录后联系管理员")
             else:
                 st.info("支付未完成，请完成支付后刷新页面")
+                
         except Exception as e:
             st.error(f"验证支付状态失败: {e}")
+            st.info("请稍后刷新页面查看升级状态")
 
 
 # ==================== 数据解析函数 ====================
@@ -4422,6 +4458,10 @@ def main():
     """主函数：控制页面流程"""
     
     init_session_state()
+    
+    # ===== 重要：在任何页面渲染之前处理支付回调 =====
+    handle_stripe_callback()
+    # ================================================
     
     # 加载缓存
     if not st.session_state.get("stock_cache_loaded", False):
