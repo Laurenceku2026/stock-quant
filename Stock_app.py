@@ -2704,11 +2704,62 @@ def render_stock_analysis():
 # ==================== 模块4：回测功能 ====================
 
 def render_backtest():
-    """回测功能模块（真实回测 - 天数选择版）"""
+    """回测功能模块"""
     st.markdown(f"### {t()['module4_title']}")
     
     last_update = get_last_update_time("backtest")
     st.caption(f"📅 最后更新: {last_update}")
+    
+    # ===== 添加：手动添加股票到回测池 =====
+    st.markdown("**➕ 手动添加股票到回测池**")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        add_stock_code = st.text_input(
+            "股票代码", 
+            placeholder="如: 000001.SZ", 
+            key="backtest_add_stock", 
+            label_visibility="collapsed"
+        )
+    with col2:
+        if st.button("添加", key="backtest_add_btn", use_container_width=True):
+            if add_stock_code:
+                is_valid, formatted = validate_stock_code(add_stock_code)
+                if is_valid:
+                    stock_name = get_stock_name_from_tushare(formatted)
+                    success, msg = add_to_backtest_pool(
+                        st.session_state.user_id, formatted, stock_name,
+                        st.session_state.get("access_token")
+                    )
+                    if success:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+                else:
+                    st.error(formatted)
+    
+    st.markdown("---")
+    
+    # 获取回测池
+    stocks = get_backtest_pool(st.session_state.user_id, st.session_state.get("access_token"))
+    
+    # 显示回测池（始终显示）
+    st.markdown("**📋 回测池股票**")
+    if not stocks:
+        st.info("暂无股票，请从推荐池添加或手动添加上方")
+    else:
+        # 显示股票列表，带删除按钮
+        for stock in stocks:
+            col1, col2, col3 = st.columns([3, 1, 1])
+            with col1:
+                st.write(f"{stock['stock_code']} ({stock.get('stock_name', '')})")
+            with col2:
+                if st.button("🗑️", key=f"del_backtest_{stock['stock_code']}"):
+                    remove_from_backtest_pool(st.session_state.user_id, stock['stock_code'], st.session_state.get("access_token"))
+                    st.rerun()
+        st.caption(f"共 {len(stocks)} 只股票")
+    
+    # ... 后续回测参数设置和运行按钮保持不变 ...
     
     # 获取回测池
     stocks = get_backtest_pool(st.session_state.user_id, st.session_state.get("access_token"))
