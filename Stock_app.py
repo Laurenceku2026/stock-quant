@@ -2910,47 +2910,54 @@ def render_backtest():
             st.metric("初始资金", f"¥{result.get('initial_capital', 0):,.0f}")
             st.metric("最终资金", f"¥{result.get('final_value', 0):,.0f}")
         
-        # 资金曲线图
+        # 资金曲线图# 资金曲线图
         portfolio_values = result.get('portfolio_values', [])
         dates = result.get('dates', [])
         
         if portfolio_values and dates:
             st.markdown("**📈 资金曲线图**")
             
+            # 确保 portfolio_values 中的值是普通 float
+            portfolio_values_clean = [float(v) if hasattr(v, '__float__') else v for v in portfolio_values]
+            
             # 限制显示点数（避免过密）
-            if len(portfolio_values) > 200:
-                step = len(portfolio_values) // 200
-                display_values = portfolio_values[::step]
+            if len(portfolio_values_clean) > 200:
+                step = len(portfolio_values_clean) // 200
+                display_values = portfolio_values_clean[::step]
                 display_dates = dates[::step]
             else:
-                display_values = portfolio_values
+                display_values = portfolio_values_clean
                 display_dates = dates
             
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=display_dates,
-                y=display_values,
-                mode='lines',
-                name='资产净值',
-                line=dict(color='#4facfe', width=2),
-                fill='tozeroy',
-                fillcolor='rgba(79, 172, 254, 0.1)'
-            ))
-            
-            # 添加初始资金参考线
-            initial = result.get('initial_capital', 0)
-            fig.add_hline(y=initial, line_dash="dash", line_color="gray", annotation_text=f"初始资金 ¥{initial:,.0f}")
-            
-            fig.update_layout(
-                title="账户资产净值变化",
-                xaxis_title="日期",
-                yaxis_title="资产净值 (元)",
-                height=400,
-                hovermode='x unified'
-            )
-            fig.update_yaxis(tickformat=",.0f")
-            
-            st.plotly_chart(fig, use_container_width=True)
+            try:
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=display_dates,
+                    y=display_values,
+                    mode='lines',
+                    name='资产净值',
+                    line=dict(color='#4facfe', width=2),
+                    fill='tozeroy',
+                    fillcolor='rgba(79, 172, 254, 0.1)'
+                ))
+                
+                # 添加初始资金参考线
+                initial = result.get('initial_capital', 0)
+                fig.add_hline(y=initial, line_dash="dash", line_color="gray", annotation_text=f"初始资金 ¥{initial:,.0f}")
+                
+                fig.update_layout(
+                    title="账户资产净值变化",
+                    xaxis_title="日期",
+                    yaxis_title="资产净值 (元)",
+                    height=400,
+                    hovermode='x unified'
+                )
+                fig.update_yaxis(tickformat=",.0f")
+                
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception as e:
+                st.error(f"绘制资金曲线图失败: {e}")
+                st.write("原始数据:", portfolio_values_clean[:5])
         
         # 交易明细
         trade_logs = result.get('trade_logs', [])
