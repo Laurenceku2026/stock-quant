@@ -1365,31 +1365,70 @@ def create_checkout_session(user_id: str, user_email: str, price_id: str) -> Tup
 
 def handle_stripe_callback():
     """处理 Stripe 支付成功回调"""
+    
+    # 获取URL参数
     query_params = st.query_params
+    
+    # 调试：显示所有参数
+    st.write("🔍 ===== 调试开始 =====")
+    st.write(f"🔍 query_params: {dict(query_params)}")
+    
     if "session_id" in query_params:
         session_id = query_params["session_id"]
-        
-        # ===== 诊断代码 =====
-        st.write("🔍 进入回调函数")
         st.write(f"🔍 session_id: {session_id}")
         
-        # 检查 stripe 模块
-        import stripe
-        st.write(f"🔍 stripe 模块已导入, 版本: {stripe.__version__ if hasattr(stripe, '__version__') else 'unknown'}")
-        
-        # 检查 API Key
-        stripe.api_key = STRIPE_SECRET_KEY
-        st.write(f"🔍 API Key 已设置, 长度: {len(STRIPE_SECRET_KEY)}")
-        st.write(f"🔍 API Key 前缀: {STRIPE_SECRET_KEY[:7]}...")
-        # ===================
+        # 防止重复处理
+        if st.session_state.get("payment_processed", False):
+            st.write("🔍 已处理过，跳过")
+            return
         
         try:
+            import stripe
+            st.write("🔍 stripe 模块导入成功")
+            
+            # 设置 API Key
+            stripe.api_key = STRIPE_SECRET_KEY
+            st.write(f"🔍 API Key 已设置，长度: {len(STRIPE_SECRET_KEY)}")
+            
+            # 获取 session
             session = stripe.checkout.Session.retrieve(session_id)
-            st.write(f"🔍 session 获取成功: {session.id}")
-            # ... 后续代码
+            st.write(f"🔍 session 获取成功")
+            st.write(f"🔍 payment_status: {session.payment_status}")
+            
+            if session.payment_status == "paid":
+                st.write("🔍 支付状态为 paid")
+                user_id = session.metadata.get("user_id")
+                st.write(f"🔍 user_id: {user_id}")
+                
+                if user_id and user_id != "admin":
+                    # 更新数据库
+                    headers = get_supabase_headers(use_secret=True)
+                    url = f"{SUPABASE_URL}/rest/v1/user_settings?user_id=eq.{user_id}"
+                    data = {"subscription_tier": "pro"}
+                    response = requests.patch(url, headers=headers, json=data)
+                    st.write(f"🔍 更新状态码: {response.status_code}")
+                    
+                    if response.status_code in [200, 204]:
+                        st.success("✅ 支付成功！您已是专业版用户")
+                        st.balloons()
+                        st.session_state.payment_processed = True
+                        st.query_params.clear()
+                        time.sleep(2)
+                        st.rerun()
+                    else:
+                        st.error(f"更新失败: {response.text}")
+                else:
+                    st.warning("支付成功，但用户信息验证失败")
+            else:
+                st.info(f"支付未完成: {session.payment_status}")
+                
         except Exception as e:
             st.error(f"验证失败: {type(e).__name__} - {e}")
             st.write(f"🔍 完整错误: {e}")
+    else:
+        st.write("🔍 没有 session_id 参数")
+    
+    st.write("🔍 ===== 调试结束 =====")
 
 # ==================== 数据解析函数 ====================
 
