@@ -1389,38 +1389,70 @@ def handle_stripe_callback():
 # ==================== 数据解析函数 ====================
 
 def parse_stock_code(code: str) -> Tuple[str, str]:
-    """解析股票代码"""
+    """
+    解析股票代码，自动识别市场
+    支持格式:
+    - 6位数字: 000001 (自动识别: 000xxx,001xxx,002xxx,003xxx,300xxx为SZ，其他为SH)
+    - 带后缀: 000001.SZ, 0700.HK, 600000.SH
+    - 港股: 00700 (5位数字，自动加.HK)
+    """
     code = code.strip().upper()
     
+    # 如果已经有后缀，直接返回
     if code.endswith(".HK"):
         return "HK", code
     elif code.endswith(".SZ"):
         return "SZ", code
     elif code.endswith(".SH"):
         return "SH", code
-    else:
-        return "A", code + ".SZ"
+    
+    # 纯数字，自动识别市场
+    if code.isdigit():
+        # 港股：5位数字（如 00700）
+        if len(code) == 5:
+            return "HK", f"{code}.HK"
+        # A股：6位数字
+        elif len(code) == 6:
+            # 深圳市场：000xxx, 001xxx, 002xxx, 003xxx, 300xxx
+            if code.startswith(('000', '001', '002', '003', '300')):
+                return "SZ", f"{code}.SZ"
+            # 上海市场：600xxx, 601xxx, 603xxx, 605xxx, 688xxx
+            else:
+                return "SH", f"{code}.SH"
+        else:
+            return "A", code
+    
+    # 无法识别
+    return "UNKNOWN", code
 
 
 def validate_stock_code(code: str) -> Tuple[bool, str]:
-    """验证股票代码是否有效"""
+    """
+    验证股票代码是否有效
+    返回: (is_valid, formatted_code_or_error)
+    """
     market, formatted = parse_stock_code(code)
     
-    if market in ["SZ", "SH"]:
-        num_part = formatted.split('.')[0]
-        if num_part.isdigit() and len(num_part) == 6:
-            return True, formatted
-        else:
-            return False, f"无效A股代码: {code}，应为6位数字"
-    elif market == "HK":
+    if market == "HK":
         num_part = formatted.split('.')[0]
         if num_part.isdigit() and len(num_part) in [4, 5]:
             return True, formatted
         else:
             return False, f"无效港股代码: {code}，应为4-5位数字"
+    elif market == "SZ":
+        num_part = formatted.split('.')[0]
+        if num_part.isdigit() and len(num_part) == 6:
+            return True, formatted
+        else:
+            return False, f"无效深市代码: {code}，应为6位数字"
+    elif market == "SH":
+        num_part = formatted.split('.')[0]
+        if num_part.isdigit() and len(num_part) == 6:
+            return True, formatted
+        else:
+            return False, f"无效沪市代码: {code}，应为6位数字"
     else:
-        return False, f"无法识别市场: {code}，请使用 .SZ/.SH/.HK 后缀"
-
+        return False, f"无法识别股票代码: {code}，请检查后重试"
 
 # ==================== 登录/注册UI组件 ====================
 
