@@ -2858,6 +2858,8 @@ def render_backtest():
         run_btn = st.button("📊 运行回测", key="run_backtest", use_container_width=True, type="primary")
     
     if run_btn:
+        st.write("🔍 运行回测按钮被点击")  # 添加这行
+        st.write(f"🔍 stocks 数量: {len(stocks)}")    
         if not stocks:
             st.warning("回测池为空，请先从推荐池添加股票")
             return
@@ -2869,6 +2871,8 @@ def render_backtest():
         # 计算回测日期范围（使用天数）
         end_date = datetime.now().strftime("%Y%m%d")
         start_date = (datetime.now() - timedelta(days=backtest_days)).strftime("%Y%m%d")
+        st.write(f"🔍 计算后 start_date: {start_date}")
+        st.write(f"🔍 计算后 end_date: {end_date}")
         
         with st.spinner("正在运行回测，请稍候..."):
             stock_codes = [s["stock_code"] for s in stocks]
@@ -2883,7 +2887,7 @@ def render_backtest():
                 position_pct=position_pct,
                 max_positions=max_positions
             )
-            
+            st.write(f"🔍 回测结果: {result}")  # 添加这行
             st.session_state.backtest_result = result
             update_last_update_time("backtest")
         
