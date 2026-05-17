@@ -1188,6 +1188,8 @@ def get_live_pool(user_id: str, access_token: str = None) -> List[Dict]:
 
 def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
     """自动推荐Top10股票（基于技术指标评分）"""
+    st.write("🔍 ===== 调试开始 =====")
+    st.write(f"🔍 TUSHARE_AVAILABLE = {TUSHARE_AVAILABLE}")
     if not TUSHARE_AVAILABLE:
         return []
     
@@ -1503,7 +1505,7 @@ print("=" * 60)
 
 def get_stock_daily(ts_code: str, days: int = 120) -> pd.DataFrame:
     """获取股票日线数据"""
-        
+    st.write(f"🔍 获取 {ts_code} 日线数据...")    
     if not TUSHARE_AVAILABLE or TUSHARE_PRO is None:
         return pd.DataFrame()
     
