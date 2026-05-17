@@ -143,6 +143,10 @@ STRIPE_PUBLISHABLE_KEY = st.secrets.get("STRIPE_PUBLISHABLE_KEY", "")
 STRIPE_PRICE_MONTHLY = st.secrets.get("STRIPE_PRICE_MONTHLY", "")
 STRIPE_PRICE_YEARLY = st.secrets.get("STRIPE_PRICE_YEARLY", "")
 
+# 全局设置 Stripe API Key（参考TechLife Portal）
+import stripe
+stripe.api_key = STRIPE_SECRET_KEY
+
 # ==================== DeepSeek 配置 ====================
 DEEPSEEK_API_KEY = st.secrets.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = st.secrets.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
@@ -1360,38 +1364,30 @@ def create_checkout_session(user_id: str, user_email: str, price_id: str) -> Tup
 
 
 def handle_stripe_callback():
-    """处理 Stripe 支付成功回调（参考TechLife Portal）"""
+    """处理 Stripe 支付成功回调（完全参考TechLife Portal）"""
     query_params = st.query_params
     if "session_id" in query_params:
         session_id = query_params["session_id"]
         try:
-            import stripe
-            stripe.api_key = STRIPE_SECRET_KEY
+            # TechLife Portal 的做法：直接使用 stripe 模块（已全局设置）
             session = stripe.checkout.Session.retrieve(session_id)
-            
             if session.payment_status == "paid":
                 user_id = session.metadata.get("user_id")
+                # 使用 supabase_patch 方式更新（参考TechLife Portal）
+                headers = get_supabase_headers(use_secret=True)
+                url = f"{SUPABASE_URL}/rest/v1/user_settings?user_id=eq.{user_id}"
+                data = {"subscription_tier": "pro"}
+                response = requests.patch(url, headers=headers, json=data)
                 
-                # 参考TechLife Portal：直接使用 supabase_patch 更新
-                if user_id and user_id != "admin":
-                    headers = get_supabase_headers(use_secret=True)
-                    url = f"{SUPABASE_URL}/rest/v1/user_settings?user_id=eq.{user_id}"
-                    data = {"subscription_tier": "pro"}
-                    response = requests.patch(url, headers=headers, json=data)
-                    
-                    if response.status_code in [200, 204]:
-                        st.success("✅ 支付成功！您已是专业版用户")
-                        st.balloons()
-                        # 更新 session_state
-                        st.session_state.subscription_tier = "pro"
-                        st.query_params.clear()
-                        st.rerun()
-                    else:
-                        st.error(f"更新失败: {response.text}")
+                if response.status_code in [200, 204]:
+                    st.success("✅ 支付成功！您已是专业版用户")
+                    st.balloons()
+                    st.query_params.clear()
+                    st.rerun()
                 else:
-                    st.warning("支付成功，但用户信息验证失败")
+                    st.error(f"更新失败: {response.text}")
             else:
-                st.info("支付未完成，请完成支付后刷新页面")
+                st.warning("支付未完成")
         except Exception as e:
             st.error(f"验证失败: {e}")
 
