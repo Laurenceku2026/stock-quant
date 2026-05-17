@@ -21,8 +21,7 @@ AI量化股票系统 - 完整版本 v4.0
 # - 板块缓存表常量定义
 # - Tushare热点板块同步函数（sync_hot_sectors_to_db）
 # - 板块缓存刷新函数
-# ============================================================
-
+#===================
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -39,6 +38,34 @@ from collections import Counter
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
+# ==================== 时区配置 ====================
+from datetime import timezone
+
+# 定义北京时间时区 (UTC+8)
+BEIJING_TZ = timezone(timedelta(hours=8))
+
+def get_beijing_time() -> datetime:
+    """获取当前北京时间"""
+    return datetime.now(BEIJING_TZ)
+
+def get_current_time_str() -> str:
+    """获取当前北京时间字符串（精确到分钟）"""
+    return datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M")
+
+def utc_to_beijing_str(utc_time_str: str) -> str:
+    """将UTC时间字符串转换为北京时间字符串"""
+    if not utc_time_str:
+        return ""
+    try:
+        # 处理不同格式的UTC时间
+        if utc_time_str.endswith('Z'):
+            utc_time_str = utc_time_str.replace('Z', '+00:00')
+        utc_time = datetime.fromisoformat(utc_time_str)
+        beijing_time = utc_time.astimezone(BEIJING_TZ)
+        return beijing_time.strftime("%Y-%m-%d %H:%M:%S")
+    except:
+        return utc_time_str
 
 # ==================== 页面配置 ====================
 st.set_page_config(
@@ -331,9 +358,8 @@ def init_session_state():
 
 # ==================== 工具函数 ====================
 def get_current_time_str() -> str:
-    """获取当前时间字符串（精确到分钟）"""
-    return datetime.now().strftime("%Y-%m-%d %H:%M")
-
+    """获取当前北京时间字符串（精确到分钟）"""
+    return datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M")
 
 def update_last_update_time(module_name: str):
     """更新模块的最后更新时间"""
