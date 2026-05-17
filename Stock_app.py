@@ -1364,33 +1364,32 @@ def create_checkout_session(user_id: str, user_email: str, price_id: str) -> Tup
 
 
 def handle_stripe_callback():
-    """处理 Stripe 支付成功回调（完全参考TechLife Portal）"""
+    """处理 Stripe 支付成功回调"""
     query_params = st.query_params
     if "session_id" in query_params:
         session_id = query_params["session_id"]
+        
+        # ===== 诊断代码 =====
+        st.write("🔍 进入回调函数")
+        st.write(f"🔍 session_id: {session_id}")
+        
+        # 检查 stripe 模块
+        import stripe
+        st.write(f"🔍 stripe 模块已导入, 版本: {stripe.__version__ if hasattr(stripe, '__version__') else 'unknown'}")
+        
+        # 检查 API Key
+        stripe.api_key = STRIPE_SECRET_KEY
+        st.write(f"🔍 API Key 已设置, 长度: {len(STRIPE_SECRET_KEY)}")
+        st.write(f"🔍 API Key 前缀: {STRIPE_SECRET_KEY[:7]}...")
+        # ===================
+        
         try:
-            # TechLife Portal 的做法：直接使用 stripe 模块（已全局设置）
             session = stripe.checkout.Session.retrieve(session_id)
-            if session.payment_status == "paid":
-                user_id = session.metadata.get("user_id")
-                # 使用 supabase_patch 方式更新（参考TechLife Portal）
-                headers = get_supabase_headers(use_secret=True)
-                url = f"{SUPABASE_URL}/rest/v1/user_settings?user_id=eq.{user_id}"
-                data = {"subscription_tier": "pro"}
-                response = requests.patch(url, headers=headers, json=data)
-                
-                if response.status_code in [200, 204]:
-                    st.success("✅ 支付成功！您已是专业版用户")
-                    st.balloons()
-                    st.query_params.clear()
-                    st.rerun()
-                else:
-                    st.error(f"更新失败: {response.text}")
-            else:
-                st.warning("支付未完成")
+            st.write(f"🔍 session 获取成功: {session.id}")
+            # ... 后续代码
         except Exception as e:
-            st.error(f"验证失败: {e}")
-
+            st.error(f"验证失败: {type(e).__name__} - {e}")
+            st.write(f"🔍 完整错误: {e}")
 
 # ==================== 数据解析函数 ====================
 
