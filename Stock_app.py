@@ -1223,8 +1223,6 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
             stock_name = sector_info["names"][i] if i < len(sector_info["names"]) else ts_code
             all_stocks.append({"code": ts_code, "name": stock_name, "sector": sector_name})
     
-    st.write(f"🔍 候选股票总数: {len(all_stocks)}")
-    
     seen = set()
     unique_stocks = []
     for stock in all_stocks:
@@ -1232,11 +1230,8 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
             seen.add(stock["code"])
             unique_stocks.append(stock)
     
-    st.write(f"🔍 去重后: {len(unique_stocks)} 只")
-    
     scored_stocks = []
     for idx, stock in enumerate(unique_stocks):
-        st.write(f"🔍 正在计算 {idx+1}/{len(unique_stocks)}: {stock['code']}")
         score_result = get_stock_score(stock["code"], stock["name"])
         scored_stocks.append({
             "code": stock["code"],
@@ -1574,7 +1569,6 @@ print("=" * 60)
 
 def get_stock_daily(ts_code: str, days: int = 120) -> pd.DataFrame:
     """获取股票日线数据"""
-    st.write(f"🔍 获取 {ts_code} 日线数据...")    
     if not TUSHARE_AVAILABLE or TUSHARE_PRO is None:
         return pd.DataFrame()
     
