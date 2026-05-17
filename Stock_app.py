@@ -1,16 +1,13 @@
 """
-AI量化股票系统 - 完整版本 v3.0
+AI量化股票系统 - 完整版本 v4.0
 基于DFSS方法论 + 机器学习集成 + Tushare真实数据 + 掘金交易 + Stripe支付
 
-更新内容（v3.0）：
-- 剩余次数扣减修复
-- K线图修复（连续显示，涨红跌绿）
-- 完整管理员面板
-- 推荐池自动Top10（基于技术指标评分）
-- 掘金手动下单集成
-- Stripe支付集成（生成链接用户手动点击）
-- 预置热点板块（含机器人板块）
-- 股票名称缓存到Supabase（解决Tushare频率超限）
+更新内容（v4.0）：
+- 板块缓存表支持（Supabase存储）
+- Tushare热点板块同步（利用2126分积分）
+- 用户自定义板块管理
+- 回测参数保存到用户设置
+- 清理调试代码
 
 部署方式：
 1. 将代码上传到GitHub
@@ -20,11 +17,10 @@ AI量化股票系统 - 完整版本 v3.0
 
 # ============================================================
 # 第1部分：导入、配置、常量、多语言、Supabase连接、Tushare初始化
-# 修复内容：
-# - load_stock_name_cache() 只从Supabase读取，永不调用Tushare
-# - sync_stock_basic_to_db() 管理员手动同步时调用
-# - 添加 init_stock_cache_on_startup() APP启动时加载缓存
-# - 解决Tushare频率超限问题
+# 新增功能：
+# - 板块缓存表常量定义
+# - Tushare热点板块同步函数（sync_hot_sectors_to_db）
+# - 板块缓存刷新函数
 # ============================================================
 
 import streamlit as st
@@ -61,7 +57,7 @@ ADMIN_EMAIL = "Techlife2027@gmail.com"
 FREE_TRIAL_LIMIT = 30
 MAX_RECOMMENDED_STOCKS = 30
 
-# 技术指标权重
+# 技术指标权重（默认值）
 TECH_WEIGHTS = {
     "macd": 0.25,
     "kdj": 0.20,
@@ -79,7 +75,7 @@ SIGNAL_LEVELS = {
     "D": {"min_score": 0, "action": "清仓/回避", "position": "0%", "color": "#888888"}
 }
 
-# 预置热点板块（包含机器人板块）
+# 预置热点板块（作为降级方案）
 HOT_SECTORS = {
     "光模块/CPO": {
         "stocks": ["300308.SZ", "300394.SZ", "300502.SZ", "688313.SH", "301191.SZ"],
@@ -129,6 +125,7 @@ DEEPSEEK_MODEL = st.secrets.get("DEEPSEEK_MODEL", "deepseek-chat")
 TUSHARE_TOKEN = st.secrets.get("TUSHARE_TOKEN", "")
 TUSHARE_AVAILABLE = False
 TUSHARE_PRO = None
+TUSHARE_INTEGRAL = 2126  # 当前积分
 
 # ==================== 掘金配置 ====================
 GM_TOKEN = st.secrets.get("GM_TOKEN", "")
@@ -328,6 +325,8 @@ def init_session_state():
         st.session_state.last_update_time = {}
     if "stock_cache_loaded" not in st.session_state:
         st.session_state.stock_cache_loaded = False
+    if "sector_cache_loaded" not in st.session_state:
+        st.session_state.sector_cache_loaded = False
 
 
 # ==================== 工具函数 ====================
@@ -361,6 +360,7 @@ def init_tushare():
         TUSHARE_PRO = ts.pro_api()
         TUSHARE_AVAILABLE = True
         print("✅ Tushare 初始化成功")
+        print(f"   当前积分: {TUSHARE_INTEGRAL}分")
     except ImportError:
         print("❌ Tushare 未安装，请运行: pip install tushare")
     except Exception as e:
@@ -379,13 +379,11 @@ def sync_stock_basic_to_db():
         return False, 0, "Tushare不可用，请检查配置"
     
     try:
-        # 从Tushare获取股票列表
         df = TUSHARE_PRO.stock_basic(exchange='', list_status='L', fields='ts_code,name')
         
         if df is None or df.empty:
             return False, 0, "获取股票列表失败"
         
-        # 准备数据
         records = []
         for _, row in df.iterrows():
             records.append({
@@ -394,7 +392,6 @@ def sync_stock_basic_to_db():
                 "updated_at": datetime.now().isoformat()
             })
         
-        # 插入到Supabase
         headers = {
             "apikey": SUPABASE_SECRET_KEY,
             "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
@@ -402,10 +399,8 @@ def sync_stock_basic_to_db():
         }
         url = f"{SUPABASE_URL}/rest/v1/stock_basic_cache"
         
-        # 先清空旧数据
         requests.delete(url, headers=headers)
         
-        # 批量插入
         inserted = 0
         for record in records:
             response = requests.post(url, headers=headers, json=record)
@@ -424,7 +419,6 @@ def load_stock_name_cache() -> Dict[str, str]:
     """
     从Supabase加载股票名称缓存
     只从数据库读取，永不调用Tushare（避免频率超限）
-    返回: { "000001.SZ": "平安银行", ... }
     """
     global STOCK_NAME_CACHE
     
@@ -432,7 +426,6 @@ def load_stock_name_cache() -> Dict[str, str]:
         return STOCK_NAME_CACHE
     
     try:
-        # 只从数据库读取
         headers = {
             "apikey": SUPABASE_SECRET_KEY,
             "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
@@ -457,10 +450,7 @@ def load_stock_name_cache() -> Dict[str, str]:
 
 
 def init_stock_cache_on_startup():
-    """
-    APP启动时加载股票名称缓存
-    只从数据库读取，不调用Tushare
-    """
+    """APP启动时加载股票名称缓存"""
     if not st.session_state.get("stock_cache_loaded", False):
         load_stock_name_cache()
         st.session_state.stock_cache_loaded = True
@@ -472,6 +462,137 @@ def get_stock_name_from_tushare(ts_code: str) -> str:
     if not STOCK_NAME_CACHE:
         load_stock_name_cache()
     return STOCK_NAME_CACHE.get(ts_code, ts_code.split('.')[0])
+
+
+# ==================== 板块缓存（从Supabase读取 + Tushare同步） ====================
+
+def sync_hot_sectors_to_db() -> Tuple[bool, str]:
+    """
+    从Tushare同步热点板块到Supabase（需要2000+积分）
+    使用 limit_cpt_list 接口获取涨停板块排名
+    返回: (success, message)
+    """
+    if not TUSHARE_AVAILABLE:
+        return False, "Tushare不可用"
+    
+    if TUSHARE_INTEGRAL < 2000:
+        return False, f"积分不足（当前{TUSHARE_INTEGRAL}分，需要2000分）"
+    
+    try:
+        trade_date = datetime.now().strftime("%Y%m%d")
+        df = TUSHARE_PRO.limit_cpt_list(trade_date=trade_date)
+        
+        if df is None or df.empty:
+            return False, "获取涨停板块排名失败"
+        
+        headers = {
+            "apikey": SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
+            "Content-Type": "application/json"
+        }
+        url = f"{SUPABASE_URL}/rest/v1/sector_cache"
+        
+        # 清空旧数据
+        requests.delete(url, headers=headers)
+        
+        inserted = 0
+        for _, row in df.iterrows():
+            sector_name = row.get('name', '')
+            if not sector_name:
+                continue
+            
+            # 计算热度分数（基于涨停家数）
+            limit_count = row.get('limit_count', 0)
+            hot_score = min(100, 50 + limit_count * 5)
+            
+            record = {
+                "sector_name": sector_name,
+                "hot_score": hot_score,
+                "source": "tushare",
+                "updated_at": datetime.now().isoformat()
+            }
+            
+            response = requests.post(url, headers=headers, json=record)
+            if response.status_code in [200, 201]:
+                inserted += 1
+        
+        print(f"✅ 成功同步 {inserted} 个热点板块到数据库")
+        return True, f"成功同步 {inserted} 个热点板块"
+        
+    except Exception as e:
+        print(f"同步热点板块失败: {e}")
+        return False, f"同步失败: {str(e)}"
+
+
+def refresh_sector_cache():
+    """
+    刷新板块缓存（每日自动或用户手动）
+    如果Tushare失败，降级使用预置板块
+    """
+    success, msg = sync_hot_sectors_to_db()
+    if not success:
+        print(f"热点板块同步失败，使用预置板块: {msg}")
+        # 降级：将预置板块写入缓存
+        save_default_sectors_to_cache()
+    return success
+
+
+def save_default_sectors_to_cache():
+    """将预置板块保存到缓存（降级方案）"""
+    try:
+        headers = {
+            "apikey": SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
+            "Content-Type": "application/json"
+        }
+        url = f"{SUPABASE_URL}/rest/v1/sector_cache"
+        
+        requests.delete(url, headers=headers)
+        
+        for sector_name, sector_info in HOT_SECTORS.items():
+            record = {
+                "sector_name": sector_name,
+                "stock_codes": sector_info["stocks"],
+                "source": "default",
+                "updated_at": datetime.now().isoformat()
+            }
+            requests.post(url, headers=headers, json=record)
+        
+        print("✅ 预置板块已保存到缓存")
+    except Exception as e:
+        print(f"保存预置板块失败: {e}")
+
+
+def load_sector_cache() -> List[Dict]:
+    """
+    从Supabase加载板块缓存
+    返回板块列表
+    """
+    try:
+        headers = {
+            "apikey": SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
+            "Content-Type": "application/json"
+        }
+        url = f"{SUPABASE_URL}/rest/v1/sector_cache"
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code == 200 and response.json():
+            return response.json()
+        return []
+    except Exception as e:
+        print(f"加载板块缓存失败: {e}")
+        return []
+
+
+def init_sector_cache_on_startup():
+    """APP启动时加载板块缓存"""
+    if not st.session_state.get("sector_cache_loaded", False):
+        sectors = load_sector_cache()
+        if not sectors:
+            # 缓存为空，尝试同步
+            refresh_sector_cache()
+        st.session_state.sector_cache_loaded = True
 
 
 # ==================== 掘金初始化 ====================
@@ -494,13 +615,16 @@ def init_gm():
         print(f"❌ 掘金初始化失败: {e}")
 
 
-# ==================== 板块表现获取（使用缓存） ====================
+# ==================== 板块表现获取（支持缓存） ====================
 
-@st.cache_data(ttl=7200)  # 缓存2小时
+@st.cache_data(ttl=7200)
 def get_cached_sector_performance():
     """缓存板块表现数据"""
-    if not TUSHARE_AVAILABLE:
-        # 返回模拟数据（当Tushare不可用时）
+    # 先从缓存表获取板块列表
+    sectors = load_sector_cache()
+    
+    if not sectors:
+        # 降级使用预置板块
         data = []
         for sector_name, sector_info in HOT_SECTORS.items():
             data.append({
@@ -511,37 +635,50 @@ def get_cached_sector_performance():
         return pd.DataFrame(data)
     
     data = []
-    for sector_name, sector_info in HOT_SECTORS.items():
+    for sector in sectors:
+        sector_name = sector.get("sector_name", "")
+        stock_codes = sector.get("stock_codes", [])
+        
+        if not stock_codes:
+            data.append({
+                "板块": sector_name,
+                "涨跌幅": 0,
+                "领涨股": ""
+            })
+            continue
+        
         try:
             performances = []
-            sector_stocks = sector_info["stocks"]
+            leader_name = ""
+            leader_change = -100
             
-            for ts_code in sector_stocks:
+            for ts_code in stock_codes[:5]:  # 只取前5只成分股
                 df = get_stock_daily(ts_code, days=5)
                 if not df.empty and len(df) >= 2:
                     latest_close = df['close'].iloc[-1]
                     prev_close = df['close'].iloc[-2]
                     change_pct = (latest_close - prev_close) / prev_close * 100
                     performances.append(change_pct)
+                    
+                    if change_pct > leader_change:
+                        leader_change = change_pct
+                        leader_name = get_stock_name_from_tushare(ts_code)
             
             if performances:
                 avg_change = np.mean(performances)
-                max_idx = np.argmax(performances)
-                leader = sector_info["names"][max_idx] if max_idx < len(sector_info["names"]) else sector_info["names"][0]
             else:
                 avg_change = 0
-                leader = sector_info["names"][0]
             
             data.append({
                 "板块": sector_name,
                 "涨跌幅": round(avg_change, 2),
-                "领涨股": leader
+                "领涨股": leader_name
             })
         except Exception as e:
             data.append({
                 "板块": sector_name,
                 "涨跌幅": 0,
-                "领涨股": sector_info["names"][0]
+                "领涨股": ""
             })
     
     return pd.DataFrame(data)
@@ -554,6 +691,7 @@ init_gm()
 print("第1部分加载完成")
 print("=" * 60)
 # ============================================================
+# ============================================================
 # 第2部分：用户认证 + Supabase API封装 + 股票池操作 + 次数扣减 + Stripe支付
 # 修复内容：
 # - sign_up: 只创建Auth用户，不创建profile
@@ -561,6 +699,8 @@ print("=" * 60)
 # - 新增 Token 自动刷新机制（解决1小时过期问题）
 # - consume_free_trial: 修复次数扣减逻辑
 # - Stripe 支付函数
+# - 删除所有调试代码（st.error）
+# - 添加板块操作函数（获取用户板块、保存板块等）
 # ============================================================
 
 import time
@@ -660,7 +800,6 @@ def supabase_request(method: str, endpoint: str, data=None, params=None, use_sec
     if response.status_code == 401 and not use_secret:
         print("Token 可能过期，尝试刷新...")
         if refresh_access_token():
-            # 重新获取 headers 和 url
             headers = get_supabase_headers(use_secret, st.session_state.get("access_token"))
             if method == "GET":
                 response = requests.get(url, headers=headers)
@@ -719,9 +858,8 @@ def ensure_user_settings(user_id: str, email: str, access_token: str = None) -> 
         check_response = requests.get(check_url, headers=headers)
         
         if check_response.status_code == 200 and check_response.json():
-            return True  # 已存在
+            return True
         
-        # 不存在，创建
         settings_data = {
             "user_id": user_id,
             "email": email,
@@ -763,10 +901,7 @@ def sign_in(email: str, password: str) -> tuple:
             access_token = resp_data.get("access_token")
             refresh_token = resp_data.get("refresh_token")
             
-            # 确保有 user_settings 记录
             ensure_user_settings(user_id, user_email, access_token)
-            
-            # 更新最后登录时间
             update_user_profile(user_id, {"last_sign_in_at": datetime.now().isoformat()}, access_token)
             
             return True, "登录成功", user_id, user_email, access_token, refresh_token
@@ -825,7 +960,6 @@ def get_user_profile(user_id: str, access_token: str = None) -> dict:
                 "last_sign_in_at": data.get("last_sign_in_at")
             }
         else:
-            # 如果 user_settings 中没有记录，创建一条
             email = st.session_state.user_email if hasattr(st.session_state, 'user_email') else "unknown"
             settings_data = {
                 "user_id": user_id,
@@ -870,7 +1004,7 @@ def get_remaining_trials(user_id: str, access_token: str = None) -> int:
     """获取剩余免费次数"""
     profile = get_user_profile(user_id, access_token)
     if profile.get("subscription_tier") == "pro":
-        return -1  # -1 表示无限
+        return -1
     return profile.get("free_trials_remaining", 0)
 
 
@@ -881,7 +1015,6 @@ def consume_free_trial(user_id: str, access_token: str = None) -> bool:
     """
     profile = get_user_profile(user_id, access_token)
     
-    # 专业版用户无限使用
     if profile.get("subscription_tier") == "pro":
         return True
     
@@ -991,21 +1124,11 @@ def get_backtest_pool(user_id: str, access_token: str = None) -> List[Dict]:
 
 
 def add_to_backtest_pool(user_id: str, stock_code: str, stock_name: str, access_token: str = None) -> tuple:
-    """添加股票到回测池"""
-    
-    st.error(f"🔍 步骤1: 函数开始 - user_id={user_id}, stock_code={stock_code}")
-    
-    # 检查是否已存在
-    st.error(f"🔍 步骤2: 准备调用 get_backtest_pool")
+    """添加股票到回测池（已删除调试代码）"""
     stocks = get_backtest_pool(user_id, access_token)
-    st.error(f"🔍 步骤3: get_backtest_pool 返回, 数量={len(stocks)}")
-    
     for s in stocks:
         if s.get("stock_code") == stock_code:
-            st.error(f"🔍 步骤4: 股票已存在，返回重复错误")
             return False, f"{stock_code} 已在回测池中"
-    
-    st.error(f"🔍 步骤5: 准备插入数据")
     
     try:
         data = {
@@ -1018,18 +1141,12 @@ def add_to_backtest_pool(user_id: str, stock_code: str, stock_name: str, access_
             "backtest_status": "pending"
         }
         
-        st.error(f"🔍 步骤6: 准备调用 supabase_request, data={data}")
-        
         response = supabase_request("POST", "backtest_pool", data, access_token=access_token)
-        
-        st.error(f"🔍 步骤7: supabase_request 返回, 状态码={response.status_code}")
-        st.error(f"🔍 步骤8: 响应内容={response.text}")
         
         if response.status_code in [200, 201]:
             return True, f"成功添加 {stock_code} ({stock_name})"
         return False, f"添加失败: {response.text}"
     except Exception as e:
-        st.error(f"🔍 步骤9: 异常 - {e}")
         return False, f"添加失败: {str(e)}"
 
 
@@ -1106,6 +1223,65 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
         add_to_recommended_pool(user_id, stock["code"], stock["name"], source="ai", score=stock["score"], access_token=access_token)
     
     return top10
+
+
+# ==================== 板块操作函数 ====================
+
+def get_user_sectors(user_id: str, access_token: str = None) -> List[Dict]:
+    """获取用户自定义板块"""
+    if not user_id or user_id == "admin":
+        return []
+    
+    try:
+        response = supabase_request(
+            "GET", 
+            "user_sectors", 
+            params=f"user_id=eq.{user_id}&is_active=eq.true",
+            access_token=access_token
+        )
+        if response.status_code == 200:
+            return response.json()
+        return []
+    except Exception as e:
+        print(f"获取用户板块失败: {e}")
+        return []
+
+
+def add_user_sector(user_id: str, sector_name: str, stock_codes: List[str], 
+                    stock_names: List[str], access_token: str = None) -> tuple:
+    """添加用户自定义板块"""
+    try:
+        data = {
+            "user_id": user_id,
+            "sector_name": sector_name,
+            "stock_codes": stock_codes,
+            "stock_names": stock_names,
+            "is_active": True,
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat()
+        }
+        response = supabase_request("POST", "user_sectors", data, access_token=access_token)
+        if response.status_code in [200, 201]:
+            return True, f"成功添加板块 {sector_name}"
+        return False, f"添加失败: {response.text}"
+    except Exception as e:
+        return False, f"添加失败: {str(e)}"
+
+
+def delete_user_sector(user_id: str, sector_id: str, access_token: str = None) -> tuple:
+    """删除用户自定义板块"""
+    try:
+        response = supabase_request(
+            "DELETE", 
+            "user_sectors",
+            params=f"id=eq.{sector_id}&user_id=eq.{user_id}",
+            access_token=access_token
+        )
+        if response.status_code in [200, 204]:
+            return True, "板块已删除"
+        return False, f"删除失败: {response.text}"
+    except Exception as e:
+        return False, f"删除失败: {str(e)}"
 
 
 # ==================== Stripe 支付函数 ====================
@@ -1292,7 +1468,6 @@ def render_admin_login_form():
             
             if submitted:
                 if check_admin_login(username, password):
-                    # 保存管理员登录前的用户状态
                     st.session_state.admin_previous_user_id = st.session_state.get("user_id")
                     st.session_state.admin_previous_user_email = st.session_state.get("user_email")
                     st.session_state.admin_previous_access_token = st.session_state.get("access_token")
@@ -1312,15 +1487,16 @@ def render_admin_login_form():
             st.rerun()
 
 
-print("第2部分加载完成（含Token自动刷新）")
+print("第2部分加载完成（已删除调试代码，添加板块操作函数）")
 print("=" * 60)
 # ============================================================
 # ============================================================
 # 第3部分：评分引擎（技术指标计算、板块热度、个股评分）
-#         + 掘金下单函数 + Stripe支付函数
+#         + 掘金下单函数 + Stripe支付函数 + 用户回测参数保存
 # 修复内容：
-# - 只修复 run_real_backtest 函数中的日期比较错误
+# - 修复 run_real_backtest 函数中的日期比较错误
 # - 保留所有其他函数不变
+# - 添加用户回测参数保存/加载函数
 # ============================================================
 
 # ==================== Tushare 数据获取 ====================
@@ -1409,6 +1585,112 @@ def get_sector_performance() -> pd.DataFrame:
             })
     
     return pd.DataFrame(data)
+
+
+# ==================== 用户回测参数操作 ====================
+
+def get_user_backtest_settings(user_id: str, access_token: str = None) -> Dict:
+    """
+    获取用户保存的回测参数
+    返回: {"tech_weights": {...}, "buy_threshold": 70, "sell_threshold": 40, ...}
+    """
+    if not user_id or user_id == "admin":
+        return {
+            "tech_weights": TECH_WEIGHTS.copy(),
+            "buy_threshold": 70,
+            "sell_threshold": 40,
+            "max_hold_days": 0,
+            "position_pct": 100,
+            "max_positions": 3,
+            "backtest_days": 365
+        }
+    
+    try:
+        headers = get_supabase_headers(use_secret=True)
+        url = f"{SUPABASE_URL}/rest/v1/user_backtest_settings?user_id=eq.{user_id}"
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code == 200 and response.json():
+            data = response.json()[0]
+            tech_weights = data.get("tech_weights", {})
+            # 确保所有权重键都存在
+            for key in TECH_WEIGHTS.keys():
+                if key not in tech_weights:
+                    tech_weights[key] = TECH_WEIGHTS[key]
+            
+            return {
+                "tech_weights": tech_weights,
+                "buy_threshold": data.get("buy_threshold", 70),
+                "sell_threshold": data.get("sell_threshold", 40),
+                "max_hold_days": data.get("max_hold_days", 0),
+                "position_pct": data.get("position_pct", 100),
+                "max_positions": data.get("max_positions", 3),
+                "backtest_days": data.get("backtest_days", 365)
+            }
+    except Exception as e:
+        print(f"获取用户回测参数失败: {e}")
+    
+    return {
+        "tech_weights": TECH_WEIGHTS.copy(),
+        "buy_threshold": 70,
+        "sell_threshold": 40,
+        "max_hold_days": 0,
+        "position_pct": 100,
+        "max_positions": 3,
+        "backtest_days": 365
+    }
+
+
+def save_user_backtest_settings(user_id: str, settings: Dict, access_token: str = None) -> bool:
+    """
+    保存用户回测参数
+    settings: {"tech_weights": {...}, "buy_threshold": 70, ...}
+    """
+    if not user_id or user_id == "admin":
+        return False
+    
+    try:
+        headers = get_supabase_headers(use_secret=True)
+        check_url = f"{SUPABASE_URL}/rest/v1/user_backtest_settings?user_id=eq.{user_id}"
+        check_response = requests.get(check_url, headers=headers)
+        
+        data = {
+            "user_id": user_id,
+            "tech_weights": settings.get("tech_weights", TECH_WEIGHTS),
+            "buy_threshold": settings.get("buy_threshold", 70),
+            "sell_threshold": settings.get("sell_threshold", 40),
+            "max_hold_days": settings.get("max_hold_days", 0),
+            "position_pct": settings.get("position_pct", 100),
+            "max_positions": settings.get("max_positions", 3),
+            "backtest_days": settings.get("backtest_days", 365),
+            "updated_at": datetime.now().isoformat()
+        }
+        
+        if check_response.status_code == 200 and check_response.json():
+            url = f"{SUPABASE_URL}/rest/v1/user_backtest_settings?user_id=eq.{user_id}"
+            response = requests.patch(url, headers=headers, json=data)
+        else:
+            url = f"{SUPABASE_URL}/rest/v1/user_backtest_settings"
+            response = requests.post(url, headers=headers, json=data)
+        
+        return response.status_code in [200, 201, 204]
+    except Exception as e:
+        print(f"保存用户回测参数失败: {e}")
+        return False
+
+
+def reset_user_backtest_settings(user_id: str, access_token: str = None) -> bool:
+    """重置用户回测参数到默认值"""
+    default_settings = {
+        "tech_weights": TECH_WEIGHTS.copy(),
+        "buy_threshold": 70,
+        "sell_threshold": 40,
+        "max_hold_days": 0,
+        "position_pct": 100,
+        "max_positions": 3,
+        "backtest_days": 365
+    }
+    return save_user_backtest_settings(user_id, default_settings, access_token)
 
 
 # ==================== 技术指标计算 ====================
@@ -1623,10 +1905,16 @@ def calculate_volume_price(df: pd.DataFrame) -> Dict:
     return {"score": avg_score, "signal_level": signal_level}
 
 
-def calculate_technical_score(df: pd.DataFrame) -> Dict:
-    """计算综合技术指标得分（0-100）"""
+def calculate_technical_score(df: pd.DataFrame, tech_weights: Dict = None) -> Dict:
+    """
+    计算综合技术指标得分（0-100）
+    支持自定义权重
+    """
     if df.empty:
         return {"score": 50, "level": "D", "details": {}}
+    
+    if tech_weights is None:
+        tech_weights = TECH_WEIGHTS
     
     details = {}
     
@@ -1646,11 +1934,11 @@ def calculate_technical_score(df: pd.DataFrame) -> Dict:
     details["volume_price"] = vp["score"]
     
     total_score = (
-        macd["score"] * TECH_WEIGHTS["macd"] +
-        kdj["score"] * TECH_WEIGHTS["kdj"] +
-        boll["score"] * TECH_WEIGHTS["boll"] +
-        rsi["score"] * TECH_WEIGHTS["rsi"] +
-        vp["score"] * TECH_WEIGHTS["volume_price"]
+        macd["score"] * tech_weights.get("macd", 0.25) +
+        kdj["score"] * tech_weights.get("kdj", 0.20) +
+        boll["score"] * tech_weights.get("boll", 0.20) +
+        rsi["score"] * tech_weights.get("rsi", 0.15) +
+        vp["score"] * tech_weights.get("volume_price", 0.20)
     )
     
     level = "D"
@@ -1666,10 +1954,9 @@ def calculate_technical_score(df: pd.DataFrame) -> Dict:
     }
 
 
-def get_stock_score(ts_code: str, stock_name: str = "") -> Dict:
-    """获取个股综合评分"""
+def get_stock_score(ts_code: str, stock_name: str = "", tech_weights: Dict = None) -> Dict:
+    """获取个股综合评分，支持自定义权重"""
     
-    # 获取日线数据
     df = get_stock_daily(ts_code, days=120)
     
     if df.empty:
@@ -1680,7 +1967,7 @@ def get_stock_score(ts_code: str, stock_name: str = "") -> Dict:
         tech_score = 50
         tech_details = {}
     else:
-        tech_result = calculate_technical_score(df)
+        tech_result = calculate_technical_score(df, tech_weights)
         tech_score = tech_result["score"]
         tech_details = tech_result["details"]
         total_score = tech_score
@@ -1695,7 +1982,6 @@ def get_stock_score(ts_code: str, stock_name: str = "") -> Dict:
                 position = config["position"]
                 break
     
-    # 获取股票名称
     name = stock_name if stock_name else get_stock_name_from_tushare(ts_code)
     
     result = {
@@ -1726,11 +2012,11 @@ def generate_score_reasons(score: float) -> str:
         return "技术指标空头，建议回避"
 
 
-def score_batch_stocks(stock_list: List[Dict]) -> List[Dict]:
-    """批量计算股票得分"""
+def score_batch_stocks(stock_list: List[Dict], tech_weights: Dict = None) -> List[Dict]:
+    """批量计算股票得分，支持自定义权重"""
     results = []
     for stock in stock_list:
-        score_result = get_stock_score(stock["code"], stock.get("name", ""))
+        score_result = get_stock_score(stock["code"], stock.get("name", ""), tech_weights)
         results.append(score_result)
     return sorted(results, key=lambda x: x["total_score"], reverse=True)
 
@@ -1751,7 +2037,6 @@ def place_gm_order(stock_code: str, volume: int, price: float, side: str = "buy"
         
         set_token(GM_TOKEN)
         
-        # 转换股票代码格式（掘金需要SHSE/SZSE前缀）
         if stock_code.endswith('.SH'):
             symbol = f"SHSE.{stock_code.replace('.SH', '')}"
         elif stock_code.endswith('.SZ'):
@@ -1766,7 +2051,7 @@ def place_gm_order(stock_code: str, volume: int, price: float, side: str = "buy"
             volume=volume,
             side=order_side,
             order_type=OrderType_Limit,
-            position_effect=1,  # 开仓
+            position_effect=1,
             price=price
         )
         
@@ -1789,26 +2074,18 @@ def create_checkout_session(user_id: str, user_email: str, price_id: str) -> Tup
         import stripe
         stripe.api_key = STRIPE_SECRET_KEY
         
-        # 构建成功URL和取消URL
-        # 注意：需要替换为您的实际APP地址
-        base_url = "https://techlife-stock-quant.streamlit.app"
+        base_url = "https://stock-quant-strategy.streamlit.app"
         success_url = f"{base_url}?session_id={{CHECKOUT_SESSION_ID}}"
         cancel_url = f"{base_url}?canceled=true"
         
         session = stripe.checkout.Session.create(
             customer_email=user_email,
             payment_method_types=['card'],
-            line_items=[{
-                'price': price_id,
-                'quantity': 1,
-            }],
+            line_items=[{'price': price_id, 'quantity': 1}],
             mode='subscription',
             success_url=success_url,
             cancel_url=cancel_url,
-            metadata={
-                'user_id': user_id,
-                'price_id': price_id
-            }
+            metadata={'user_id': user_id, 'price_id': price_id}
         )
         
         return session.url, None
@@ -1830,11 +2107,9 @@ def handle_stripe_callback():
             if session.payment_status == "paid":
                 user_id = session.metadata.get("user_id")
                 if user_id and user_id != "admin":
-                    # 更新用户订阅为专业版
                     update_user_profile(user_id, {"subscription_tier": "pro"})
                     st.success("✅ 支付成功！您已是专业版用户")
                     st.balloons()
-                    # 清除URL参数
                     st.query_params.clear()
                     st.rerun()
                 else:
@@ -1934,14 +2209,12 @@ def calculate_sharpe_ratio(returns: List[float], risk_free_rate: float = 0.025) 
         return 0
     
     returns_array = np.array(returns)
-    # 计算每日超额收益（年化无风险利率转为日化）
     daily_rf = (1 + risk_free_rate) ** (1/365) - 1
     excess_returns = returns_array - daily_rf
     
     if np.std(excess_returns) == 0:
         return 0
     
-    # 夏普比率 = 平均超额收益 / 标准差 * sqrt(252)
     sharpe = (np.mean(excess_returns) / np.std(excess_returns)) * np.sqrt(252)
     return round(sharpe, 2)
 
@@ -1975,9 +2248,25 @@ def run_real_backtest(
     buy_threshold: float = 70,
     sell_threshold: float = 40,
     position_pct: float = 100,
-    max_positions: int = 3
+    max_positions: int = 3,
+    tech_weights: Dict = None,
+    max_hold_days: int = 0
 ) -> Dict:
-    """真实回测函数（修复日期比较错误）"""
+    """
+    真实回测函数（修复日期比较错误，支持自定义权重和最大持仓天数）
+    
+    参数:
+        stock_codes: 股票代码列表
+        start_date: 开始日期 (YYYYMMDD)
+        end_date: 结束日期 (YYYYMMDD)
+        initial_capital: 初始资金
+        buy_threshold: 买入阈值
+        sell_threshold: 卖出阈值
+        position_pct: 单笔仓位百分比
+        max_positions: 最大持仓数量
+        tech_weights: 技术指标权重
+        max_hold_days: 最大持仓天数（0表示不限）
+    """
     
     if not stock_codes:
         return {
@@ -1985,13 +2274,15 @@ def run_real_backtest(
             "error": "回测池为空"
         }
     
+    if tech_weights is None:
+        tech_weights = TECH_WEIGHTS
+    
     try:
         # 1. 获取所有股票的历史数据
         stock_data = {}
         for ts_code in stock_codes:
             df = get_stock_daily(ts_code, days=500)
             if not df.empty:
-                # 确保 date 列是 datetime 类型
                 if not pd.api.types.is_datetime64_any_dtype(df['date']):
                     df['date'] = pd.to_datetime(df['date'])
                 stock_data[ts_code] = df
@@ -2016,7 +2307,6 @@ def run_real_backtest(
                     except:
                         pass
         
-        # 去重并排序
         all_dates = sorted(set(all_dates))
         
         if len(all_dates) < 10:
@@ -2041,7 +2331,6 @@ def run_real_backtest(
             except:
                 end_datetime = None
         
-        # 过滤日期
         filtered_dates = []
         for d in all_dates:
             if start_datetime and d < start_datetime:
@@ -2061,28 +2350,27 @@ def run_real_backtest(
         # 4. 回测初始化
         capital = initial_capital
         positions = {}
+        hold_days = {}  # 记录持仓天数
         portfolio_values = []
         trade_logs = []
         daily_returns = []
         
         # 5. 逐日回测
-        for current_date in all_dates:
+        for day_idx, current_date in enumerate(all_dates):
             # 获取当日各股票的价格和评分
             available_stocks = []
             for ts_code, df in stock_data.items():
-                # 获取当日数据
                 day_data = df[df['date'] == current_date]
                 if day_data.empty:
                     continue
                 
                 close_price = day_data['close'].iloc[0]
                 
-                # 获取截至当日的评分
                 df_until_date = df[df['date'] <= current_date]
                 if df_until_date.empty:
                     score = 50
                 else:
-                    tech_result = calculate_technical_score(df_until_date)
+                    tech_result = calculate_technical_score(df_until_date, tech_weights)
                     score = tech_result["score"]
                 
                 available_stocks.append({
@@ -2092,7 +2380,6 @@ def run_real_backtest(
                     "name": get_stock_name_from_tushare(ts_code)
                 })
             
-            # 按评分排序
             available_stocks.sort(key=lambda x: x["score"], reverse=True)
             
             # 检查卖出条件
@@ -2103,7 +2390,15 @@ def run_real_backtest(
                     current_score = stock_info["score"]
                     position = positions[ts_code]
                     
-                    if current_score <= sell_threshold:
+                    # 更新持仓天数
+                    hold_days[ts_code] = hold_days.get(ts_code, 0) + 1
+                    
+                    # 卖出条件：评分低于卖出阈值 或 超过最大持仓天数
+                    should_sell = current_score <= sell_threshold
+                    if max_hold_days > 0 and hold_days[ts_code] >= max_hold_days:
+                        should_sell = True
+                    
+                    if should_sell:
                         sell_value = position["shares"] * current_price
                         capital += sell_value
                         
@@ -2117,10 +2412,12 @@ def run_real_backtest(
                             "price": round(current_price, 2),
                             "shares": position["shares"],
                             "amount": round(sell_value, 2),
-                            "profit_pct": round(profit_pct, 2)
+                            "profit_pct": round(profit_pct, 2),
+                            "hold_days": hold_days[ts_code]
                         })
                         
                         del positions[ts_code]
+                        del hold_days[ts_code]
             
             # 检查买入条件
             if len(positions) < max_positions:
@@ -2144,6 +2441,7 @@ def run_real_backtest(
                                 "buy_price": stock["price"],
                                 "buy_date": current_date
                             }
+                            hold_days[stock["ts_code"]] = 0
                             
                             trade_logs.append({
                                 "date": current_date.strftime("%Y-%m-%d"),
@@ -2187,7 +2485,8 @@ def run_real_backtest(
                                 "price": round(last_price, 2),
                                 "shares": position["shares"],
                                 "amount": round(sell_value, 2),
-                                "profit_pct": round(profit_pct, 2)
+                                "profit_pct": round(profit_pct, 2),
+                                "hold_days": hold_days.get(ts_code, 0)
                             })
             
             positions.clear()
@@ -2259,16 +2558,16 @@ def run_backtest_simple_fallback(stock_codes: List[str]) -> Dict:
 print("第3部分加载完成")
 print("=" * 60)
 # ============================================================
-
 # ============================================================
-# ============================================================
-# 第4部分：5个功能模块 + 掘金一键下单集成
+# 第4部分：5个功能模块 + 掘金一键下单集成 + 板块管理 + 回测参数保存
 # 修复内容：
 # - 修复 render_live_signals 中的 score 类型转换
 # - 集成掘金一键下单功能
 # - 优化各模块的缓存使用
 # - 回测周期改为天数选择（30天、90天、180天、365天、自定义）
 # - 回测池无论是否有股票都显示区域
+# - 新增板块管理界面（Tab：我的板块、系统板块、市场热点）
+# - 回测参数支持用户保存和重置
 # ============================================================
 
 # ==================== 模块1：市场简报 ====================
@@ -2288,15 +2587,14 @@ def render_market_brief():
         if not consume_free_trial(st.session_state.user_id, st.session_state.get("access_token")):
             st.warning("免费次数已用完，请升级到专业版")
             return
+        # 刷新板块缓存
+        refresh_sector_cache()
         update_last_update_time("market_brief")
         st.rerun()
     
     with st.spinner("正在获取市场数据..."):
         # 使用缓存获取板块表现
-        if TUSHARE_AVAILABLE:
-            sector_df = get_cached_sector_performance()
-        else:
-            sector_df = get_sector_performance()
+        sector_df = get_cached_sector_performance()
         
         market_trend = "震荡上行"
         market_desc = "近期市场情绪偏暖，科技板块持续活跃，建议关注热点板块轮动机会。"
@@ -2321,6 +2619,168 @@ def render_market_brief():
         
         st.markdown("**🎯 龙头股关注**")
         st.caption("• 光模块/CPO: 中际旭创、天孚通信、新易盛\n• 人工智能: 科大讯飞、海康威视\n• 半导体: 中芯国际、北方华创\n• 机器人: 汇川技术、埃斯顿")
+
+
+# ==================== 模块1.5：板块管理 ====================
+
+def render_sector_management():
+    """板块管理页面"""
+    st.markdown("### 📁 板块管理")
+    
+    # Tab切换
+    tab1, tab2, tab3 = st.tabs(["我的板块", "系统板块", "市场热点"])
+    
+    # ===== Tab1: 用户自定义板块 =====
+    with tab1:
+        st.markdown("#### ➕ 添加自定义板块")
+        
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            new_sector_name = st.text_input("板块名称", placeholder="如: 光模块", key="new_sector_name")
+        with col2:
+            if st.button("创建板块", key="create_sector_btn"):
+                if new_sector_name:
+                    # 跳转到添加股票页面（使用session_state）
+                    st.session_state.show_add_stocks_to_sector = True
+                    st.session_state.new_sector_name = new_sector_name
+                    st.rerun()
+        
+        # 添加股票到板块的界面
+        if st.session_state.get("show_add_stocks_to_sector", False):
+            sector_name = st.session_state.get("new_sector_name", "")
+            st.markdown(f"**正在创建板块: {sector_name}**")
+            
+            stock_codes_input = st.text_area(
+                "输入股票代码（每行一个，或逗号分隔）",
+                placeholder="例如:\n300308.SZ\n300394.SZ\n300502.SZ",
+                height=150,
+                key="sector_stocks_input"
+            )
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("确认创建", key="confirm_create_sector"):
+                    if stock_codes_input:
+                        # 解析股票代码
+                        codes = []
+                        names = []
+                        for line in stock_codes_input.replace(',', '\n').split('\n'):
+                            code = line.strip().upper()
+                            if code and (code.endswith('.SZ') or code.endswith('.SH')):
+                                codes.append(code)
+                                names.append(get_stock_name_from_tushare(code))
+                        
+                        if codes:
+                            success, msg = add_user_sector(
+                                st.session_state.user_id,
+                                sector_name,
+                                codes,
+                                names,
+                                st.session_state.get("access_token")
+                            )
+                            if success:
+                                st.success(msg)
+                                st.session_state.show_add_stocks_to_sector = False
+                                st.session_state.new_sector_name = ""
+                                st.rerun()
+                            else:
+                                st.error(msg)
+                        else:
+                            st.error("请至少输入一个有效的股票代码")
+                    else:
+                        st.error("请至少输入一个股票代码")
+            
+            with col2:
+                if st.button("取消", key="cancel_create_sector"):
+                    st.session_state.show_add_stocks_to_sector = False
+                    st.session_state.new_sector_name = ""
+                    st.rerun()
+        
+        # 显示已有自定义板块
+        st.markdown("#### 📂 我的板块")
+        user_sectors = get_user_sectors(st.session_state.user_id, st.session_state.get("access_token"))
+        
+        if not user_sectors:
+            st.info("暂无自定义板块，点击上方创建")
+        else:
+            for sector in user_sectors:
+                with st.expander(f"📂 {sector['sector_name']}"):
+                    stock_codes = sector.get('stock_codes', [])
+                    stock_names = sector.get('stock_names', [])
+                    
+                    if stock_codes:
+                        df = pd.DataFrame({
+                            "股票代码": stock_codes,
+                            "股票名称": stock_names if stock_names else [get_stock_name_from_tushare(c) for c in stock_codes]
+                        })
+                        st.dataframe(df, use_container_width=True, hide_index=True)
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("编辑", key=f"edit_sector_{sector['id']}"):
+                            st.info("编辑功能开发中")
+                    with col2:
+                        if st.button("删除", key=f"del_sector_{sector['id']}"):
+                            success, msg = delete_user_sector(
+                                st.session_state.user_id,
+                                sector['id'],
+                                st.session_state.get("access_token")
+                            )
+                            if success:
+                                st.success(msg)
+                                st.rerun()
+                            else:
+                                st.error(msg)
+    
+    # ===== Tab2: 系统预置板块 =====
+    with tab2:
+        st.markdown("#### 📋 系统预置板块")
+        st.caption("以下为系统预置的热点板块，用于市场简报和推荐股票池")
+        
+        for sector_name, sector_info in HOT_SECTORS.items():
+            with st.expander(f"📂 {sector_name}"):
+                df = pd.DataFrame({
+                    "股票代码": sector_info["stocks"],
+                    "股票名称": sector_info["names"]
+                })
+                st.dataframe(df, use_container_width=True, hide_index=True)
+    
+    # ===== Tab3: Tushare市场热点 =====
+    with tab3:
+        st.markdown("#### 🔥 今日市场热点（Tushare）")
+        
+        if TUSHARE_INTEGRAL >= 2000:
+            col1, col2 = st.columns([3, 1])
+            with col2:
+                if st.button("刷新热点", key="refresh_hot_sectors"):
+                    with st.spinner("正在同步热点板块..."):
+                        success, msg = sync_hot_sectors_to_db()
+                        if success:
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.error(msg)
+            
+            # 从缓存加载热点板块
+            sectors = load_sector_cache()
+            tushare_sectors = [s for s in sectors if s.get("source") == "tushare"]
+            
+            if tushare_sectors:
+                for sector in tushare_sectors[:10]:
+                    st.markdown(f"- **{sector.get('sector_name')}** (热度: {sector.get('hot_score', 50)}分)")
+            else:
+                st.info("暂无热点数据，点击刷新获取")
+                if st.button("立即同步", key="sync_hot_now"):
+                    with st.spinner("正在同步..."):
+                        success, msg = sync_hot_sectors_to_db()
+                        if success:
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.error(msg)
+        else:
+            st.warning(f"Tushare积分不足（当前{TUSHARE_INTEGRAL}分，需要2000分），无法获取市场热点")
+            st.info("升级Tushare积分后可获取实时市场热点板块")
 
 
 # ==================== 模块2：推荐股票池 ====================
@@ -2369,13 +2829,9 @@ def render_recommended_pool():
             st.warning("免费次数已用完，请升级到专业版")
             return
         with st.spinner("正在刷新推荐池..."):
-            # 获取当前推荐池
             stocks = get_recommended_pool(st.session_state.user_id, st.session_state.get("access_token"))
-            
-            # 记录原有AI推荐的数量和内容（用于降级）
             ai_stocks = [s for s in stocks if s.get("source") == "ai"]
             
-            # 清空现有推荐池中的AI推荐（物理删除）
             for stock in ai_stocks:
                 supabase_request(
                     "DELETE", 
@@ -2384,14 +2840,11 @@ def render_recommended_pool():
                     access_token=st.session_state.get("access_token")
                 )
             
-            # 自动推荐Top10
             top10 = auto_recommend_top10(st.session_state.user_id, st.session_state.get("access_token"))
             
-            # 降级方案：如果自动推荐失败，恢复原有的AI推荐
             if not top10 and ai_stocks:
-                st.warning("自动推荐暂时不可用（Tushare限制），已保留原有推荐")
+                st.warning("自动推荐暂时不可用，已保留原有推荐")
                 for stock in ai_stocks:
-                    # 恢复被删除的AI推荐（重新插入）
                     add_to_recommended_pool(
                         st.session_state.user_id, 
                         stock['stock_code'], 
@@ -2408,19 +2861,20 @@ def render_recommended_pool():
         update_last_update_time("recommended_pool")
         st.rerun()
     
-    # 获取推荐池数据
     stocks = get_recommended_pool(st.session_state.user_id, st.session_state.get("access_token"))
     
     if not stocks:
         st.info("暂无股票，请点击[添加]按钮添加股票，或点击[刷新]获取AI推荐")
         return
     
-    # 批量计算得分
+    # 获取用户技术指标权重
+    user_settings = get_user_backtest_settings(st.session_state.user_id, st.session_state.get("access_token"))
+    tech_weights = user_settings.get("tech_weights", TECH_WEIGHTS)
+    
     with st.spinner("正在计算股票评分..."):
         stock_list = [{"code": s["stock_code"], "name": s.get("stock_name", "")} for s in stocks]
-        scored_stocks = score_batch_stocks(stock_list)
+        scored_stocks = score_batch_stocks(stock_list, tech_weights)
     
-    # 显示股票列表
     for idx, stock in enumerate(scored_stocks):
         with st.container(border=True):
             col1, col2, col3, col4, col5, col6 = st.columns([1.5, 1, 1, 2, 1.5, 1])
@@ -2452,7 +2906,6 @@ def render_recommended_pool():
             
             with col6:
                 if st.button("🗑️", key=f"del_{stock['stock_code']}_{idx}"):
-                    # 物理删除
                     supabase_request(
                         "DELETE", 
                         "recommended_pool",
@@ -2461,7 +2914,6 @@ def render_recommended_pool():
                     )
                     st.rerun()
     
-    # 批量操作
     col1, col2, col3 = st.columns([1, 1, 4])
     with col1:
         if st.button("🗑️ 清空所有", key="clear_pool", use_container_width=True):
@@ -2524,15 +2976,30 @@ def render_stock_analysis():
         stock_code = st.session_state.analyze_code
         stock_name = st.session_state.get("analyze_name", "")
         
+        # 获取用户技术指标权重
+        user_settings = get_user_backtest_settings(st.session_state.user_id, st.session_state.get("access_token"))
+        tech_weights = user_settings.get("tech_weights", TECH_WEIGHTS)
+        
         with st.spinner("正在分析..."):
-            # 使用缓存获取评分
             score_result = get_cached_stock_score(stock_code, stock_name)
+            # 重新计算得分（使用用户权重）
             df = get_cached_stock_data(stock_code, days=60)
+            if not df.empty:
+                tech_result = calculate_technical_score(df, tech_weights)
+                score_result["total_score"] = tech_result["score"]
+                score_result["level"] = tech_result["level"]
+                for lvl, config in SIGNAL_LEVELS.items():
+                    if score_result["total_score"] >= config["min_score"]:
+                        score_result["action"] = config["action"]
+                        score_result["position"] = config["position"]
+                        break
+                score_result["tech_score"] = tech_result["score"]
+                score_result["tech_details"] = tech_result["details"]
+                score_result["reasons"] = generate_score_reasons(score_result["total_score"])
         
         level = score_result["level"]
         color = SIGNAL_LEVELS.get(level, {}).get("color", "#888888")
         
-        # 评分卡片
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("综合得分", f"{score_result['total_score']:.0f}")
@@ -2543,28 +3010,21 @@ def render_stock_analysis():
         with col4:
             st.metric("建议仓位", score_result["position"])
         
-        # ========== K线图（连续显示版，无周末空白） ==========
+        # K线图
         if not df.empty:
             st.markdown("**📈 K线走势图**")
             
-            # 确保数据按日期排序
             df = df.sort_values('date').reset_index(drop=True)
-            
-            # 创建数值索引（连续的数字，不会有空白）
             x_numeric = list(range(len(df)))
-            
-            # 生成日期标签（每隔N个点显示一个，避免拥挤）
-            tick_interval = max(1, len(df) // 10)  # 最多显示10个标签
+            tick_interval = max(1, len(df) // 10)
             tick_vals = list(range(0, len(df), tick_interval))
             tick_text = [df['date'].iloc[i].strftime('%m/%d') if isinstance(df['date'].iloc[i], pd.Timestamp) 
                         else str(df['date'].iloc[i]) for i in tick_vals]
             
-            # 创建子图（K线图 + 成交量）
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
                                  vertical_spacing=0.05, 
                                  row_heights=[0.7, 0.3])
             
-            # 添加K线图（使用数值索引）
             fig.add_trace(go.Candlestick(
                 x=x_numeric,
                 open=df['open'],
@@ -2576,11 +3036,9 @@ def render_stock_analysis():
                 decreasing_line_color='green'
             ), row=1, col=1)
             
-            # 计算涨跌颜色（用于成交量条）
             colors = ['red' if close >= open else 'green' 
                       for close, open in zip(df['close'], df['open'])]
             
-            # 添加成交量图
             fig.add_trace(go.Bar(
                 x=x_numeric,
                 y=df['volume'],
@@ -2588,26 +3046,13 @@ def render_stock_analysis():
                 marker_color=colors
             ), row=2, col=1)
             
-            # 更新布局
             fig.update_layout(
                 height=500,
-                xaxis=dict(
-                    tickmode='array',
-                    tickvals=tick_vals,
-                    ticktext=tick_text,
-                    title_text='日期'
-                ),
-                xaxis2=dict(
-                    tickmode='array',
-                    tickvals=tick_vals,
-                    ticktext=tick_text,
-                    title_text='日期'
-                ),
+                xaxis=dict(tickmode='array', tickvals=tick_vals, ticktext=tick_text, title_text='日期'),
+                xaxis2=dict(tickmode='array', tickvals=tick_vals, ticktext=tick_text, title_text='日期'),
                 showlegend=False,
                 margin=dict(l=40, r=40, t=40, b=40)
             )
-            
-            # 设置Y轴标题
             fig.update_yaxes(title_text="价格 (元)", row=1, col=1)
             fig.update_yaxes(title_text="成交量", row=2, col=1)
             
@@ -2632,7 +3077,6 @@ def render_stock_analysis():
         )
         st.plotly_chart(fig, use_container_width=True)
         
-        # 技术指标详情
         with st.expander("📊 技术指标详情"):
             tech_details = score_result.get("tech_details", {})
             if tech_details:
@@ -2647,7 +3091,6 @@ def render_stock_analysis():
             else:
                 st.caption("暂无详细技术指标数据")
         
-        # AI投资建议
         with st.expander("💡 AI投资建议"):
             st.markdown(f"""
             **{score_result['stock_code']} ({score_result['stock_name']})**
@@ -2661,7 +3104,6 @@ def render_stock_analysis():
             ⚠️ 以上仅供参考，不构成投资建议。
             """)
         
-        # 添加到股票池按钮
         col1, col2 = st.columns(2)
         with col1:
             if st.button("➕ 添加到推荐池", use_container_width=True):
@@ -2685,7 +3127,6 @@ def render_stock_analysis():
                 else:
                     st.error(msg)
         
-        # 清除分析状态
         if st.button("清除", key="clear_analyze"):
             st.session_state.analyze_code = ""
             st.rerun()
@@ -2694,11 +3135,14 @@ def render_stock_analysis():
 # ==================== 模块4：回测功能 ====================
 
 def render_backtest():
-    """回测功能模块（真实回测 - 天数选择版）"""
+    """回测功能模块（天数选择版 + 参数保存）"""
     st.markdown(f"### {t()['module4_title']}")
     
     last_update = get_last_update_time("backtest")
     st.caption(f"📅 最后更新: {last_update}")
+    
+    # 获取用户保存的回测参数
+    user_backtest_settings = get_user_backtest_settings(st.session_state.user_id, st.session_state.get("access_token"))
     
     # ===== 手动添加股票到回测池 =====
     st.markdown("**➕ 手动添加股票到回测池**")
@@ -2748,34 +3192,78 @@ def render_backtest():
                     st.rerun()
         st.caption(f"共 {len(stocks)} 只股票")
     
-    # 如果没有股票，不显示回测参数
     if not stocks:
         return
     
     # ==================== 回测参数配置 ====================
     st.markdown("**⚙️ 回测参数设置**")
     
+    # 使用session_state保存临时修改的参数
+    if "temp_backtest_params" not in st.session_state:
+        st.session_state.temp_backtest_params = {
+            "tech_weights": user_backtest_settings.get("tech_weights", TECH_WEIGHTS.copy()),
+            "buy_threshold": user_backtest_settings.get("buy_threshold", 70),
+            "sell_threshold": user_backtest_settings.get("sell_threshold", 40),
+            "position_pct": user_backtest_settings.get("position_pct", 100),
+            "max_positions": user_backtest_settings.get("max_positions", 3),
+            "backtest_days": user_backtest_settings.get("backtest_days", 365),
+            "max_hold_days": user_backtest_settings.get("max_hold_days", 0)
+        }
+    
+    # 技术指标权重配置
+    with st.expander("📊 技术指标权重配置", expanded=False):
+        st.caption("调整各技术指标的权重（总和应为100%）")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            macd_w = st.slider("MACD权重", 0, 50, 
+                               value=int(st.session_state.temp_backtest_params["tech_weights"].get("macd", 25) * 100),
+                               step=5, key="tech_macd")
+            kdj_w = st.slider("KDJ权重", 0, 50,
+                              value=int(st.session_state.temp_backtest_params["tech_weights"].get("kdj", 20) * 100),
+                              step=5, key="tech_kdj")
+            boll_w = st.slider("布林带权重", 0, 50,
+                               value=int(st.session_state.temp_backtest_params["tech_weights"].get("boll", 20) * 100),
+                               step=5, key="tech_boll")
+        with col2:
+            rsi_w = st.slider("RSI权重", 0, 50,
+                              value=int(st.session_state.temp_backtest_params["tech_weights"].get("rsi", 15) * 100),
+                              step=5, key="tech_rsi")
+            vp_w = st.slider("量价配合权重", 0, 50,
+                             value=int(st.session_state.temp_backtest_params["tech_weights"].get("volume_price", 20) * 100),
+                             step=5, key="tech_vp")
+        
+        # 归一化权重
+        total = macd_w + kdj_w + boll_w + rsi_w + vp_w
+        if total > 0:
+            st.session_state.temp_backtest_params["tech_weights"] = {
+                "macd": macd_w / total,
+                "kdj": kdj_w / total,
+                "boll": boll_w / total,
+                "rsi": rsi_w / total,
+                "volume_price": vp_w / total
+            }
+        
+        total_pct = sum(st.session_state.temp_backtest_params["tech_weights"].values()) * 100
+        st.caption(f"当前权重总和: {total_pct:.0f}%")
+    
     col1, col2, col3 = st.columns(3)
     with col1:
-        # 回测周期（天数选择）
-        backtest_days = st.selectbox(
-            "回测周期",
-            options=[30, 90, 180, 365, 730],
-            format_func=lambda x: f"{x}天 ({x//30}个月)" if x < 365 else f"{x}天 ({x//365}年)",
-            index=3,
-            key="backtest_days_select"
+        backtest_days = st.number_input(
+            "回测周期（天）",
+            min_value=1,
+            max_value=1095,
+            value=st.session_state.temp_backtest_params["backtest_days"],
+            step=30,
+            key="backtest_days_input"
         )
-        
-        use_custom = st.checkbox("自定义天数", key="use_custom_days")
-        if use_custom:
-            custom_days = st.number_input("自定义天数", min_value=1, max_value=1095, value=90, step=10, key="custom_days")
-            backtest_days = custom_days
+        st.session_state.temp_backtest_params["backtest_days"] = backtest_days
         
         initial_capital = st.number_input(
             "初始资金 (元)",
             min_value=10000,
             max_value=10000000,
-            value=100000,
+            value=user_backtest_settings.get("initial_capital", 100000),
             step=10000,
             key="backtest_capital"
         )
@@ -2785,41 +3273,88 @@ def render_backtest():
             "买入阈值 (得分 ≥ )",
             min_value=50,
             max_value=90,
-            value=70,
+            value=st.session_state.temp_backtest_params["buy_threshold"],
             step=5,
-            key="backtest_buy_threshold",
-            help="综合得分大于等于此值时买入"
+            key="backtest_buy_threshold"
         )
+        st.session_state.temp_backtest_params["buy_threshold"] = buy_threshold
         
         sell_threshold = st.slider(
             "卖出阈值 (得分 ≤ )",
             min_value=20,
             max_value=60,
-            value=40,
+            value=st.session_state.temp_backtest_params["sell_threshold"],
             step=5,
-            key="backtest_sell_threshold",
-            help="综合得分小于等于此值时卖出"
+            key="backtest_sell_threshold"
         )
+        st.session_state.temp_backtest_params["sell_threshold"] = sell_threshold
     
     with col3:
         position_pct = st.slider(
             "单笔仓位 (%)",
             min_value=10,
             max_value=100,
-            value=100,
+            value=st.session_state.temp_backtest_params["position_pct"],
             step=10,
-            key="backtest_position_pct",
-            help="每次买入使用的资金比例"
+            key="backtest_position_pct"
         )
+        st.session_state.temp_backtest_params["position_pct"] = position_pct
         
         max_positions = st.number_input(
             "最大持仓数量",
             min_value=1,
             max_value=10,
-            value=3,
+            value=st.session_state.temp_backtest_params["max_positions"],
             step=1,
             key="backtest_max_positions"
         )
+        st.session_state.temp_backtest_params["max_positions"] = max_positions
+        
+        max_hold_days = st.number_input(
+            "最大持仓天数 (0=不限)",
+            min_value=0,
+            max_value=365,
+            value=st.session_state.temp_backtest_params["max_hold_days"],
+            step=5,
+            key="backtest_max_hold_days"
+        )
+        st.session_state.temp_backtest_params["max_hold_days"] = max_hold_days
+    
+    # 参数操作按钮
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("💾 保存参数", key="save_backtest_params", use_container_width=True):
+            save_data = {
+                "tech_weights": st.session_state.temp_backtest_params["tech_weights"],
+                "buy_threshold": st.session_state.temp_backtest_params["buy_threshold"],
+                "sell_threshold": st.session_state.temp_backtest_params["sell_threshold"],
+                "position_pct": st.session_state.temp_backtest_params["position_pct"],
+                "max_positions": st.session_state.temp_backtest_params["max_positions"],
+                "backtest_days": st.session_state.temp_backtest_params["backtest_days"],
+                "max_hold_days": st.session_state.temp_backtest_params["max_hold_days"]
+            }
+            if save_user_backtest_settings(st.session_state.user_id, save_data, st.session_state.get("access_token")):
+                st.success("参数已保存")
+                st.rerun()
+            else:
+                st.error("保存失败")
+    
+    with col2:
+        if st.button("🔄 重置默认", key="reset_backtest_params", use_container_width=True):
+            if reset_user_backtest_settings(st.session_state.user_id, st.session_state.get("access_token")):
+                st.session_state.temp_backtest_params = {
+                    "tech_weights": TECH_WEIGHTS.copy(),
+                    "buy_threshold": 70,
+                    "sell_threshold": 40,
+                    "position_pct": 100,
+                    "max_positions": 3,
+                    "backtest_days": 365,
+                    "max_hold_days": 0
+                }
+                st.success("已重置为默认值")
+                st.rerun()
+            else:
+                st.error("重置失败")
     
     # 运行回测按钮
     col1, col2 = st.columns([1, 4])
@@ -2835,9 +3370,8 @@ def render_backtest():
             st.warning("免费次数已用完，请升级到专业版")
             return
         
-        # 计算回测日期范围
         end_date = datetime.now().strftime("%Y%m%d")
-        start_date = (datetime.now() - timedelta(days=backtest_days)).strftime("%Y%m%d")
+        start_date = (datetime.now() - timedelta(days=st.session_state.temp_backtest_params["backtest_days"])).strftime("%Y%m%d")
         
         with st.spinner("正在运行回测，请稍候..."):
             stock_codes = [s["stock_code"] for s in stocks]
@@ -2847,10 +3381,12 @@ def render_backtest():
                 start_date=start_date,
                 end_date=end_date,
                 initial_capital=initial_capital,
-                buy_threshold=buy_threshold,
-                sell_threshold=sell_threshold,
-                position_pct=position_pct,
-                max_positions=max_positions
+                buy_threshold=st.session_state.temp_backtest_params["buy_threshold"],
+                sell_threshold=st.session_state.temp_backtest_params["sell_threshold"],
+                position_pct=st.session_state.temp_backtest_params["position_pct"],
+                max_positions=st.session_state.temp_backtest_params["max_positions"],
+                tech_weights=st.session_state.temp_backtest_params["tech_weights"],
+                max_hold_days=st.session_state.temp_backtest_params["max_hold_days"]
             )
             
             st.session_state.backtest_result = result
@@ -2873,11 +3409,9 @@ def render_backtest():
         st.markdown("---")
         st.markdown("**📈 回测报告**")
         
-        # 指标卡片
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            total_return = result.get('total_return', 0)
-            st.metric("总收益率", f"{total_return:+.1f}%")
+            st.metric("总收益率", f"{result.get('total_return', 0):+.1f}%")
             st.metric("年化收益率", f"{result.get('annual_return', 0):+.1f}%")
         
         with col2:
@@ -2892,22 +3426,15 @@ def render_backtest():
             st.metric("初始资金", f"¥{result.get('initial_capital', 0):,.0f}")
             st.metric("最终资金", f"¥{result.get('final_value', 0):,.0f}")
         
-        # ========== 资金曲线图（修复版） ==========
+        # 资金曲线图
         portfolio_values = result.get('portfolio_values', [])
         dates = result.get('dates', [])
         
         if portfolio_values and dates:
             st.markdown("**📈 资金曲线图**")
             
-            # 转换 np.float64 为普通 float
-            portfolio_values_clean = []
-            for v in portfolio_values:
-                if hasattr(v, '__float__'):
-                    portfolio_values_clean.append(float(v))
-                else:
-                    portfolio_values_clean.append(v)
+            portfolio_values_clean = [float(v) if hasattr(v, '__float__') else v for v in portfolio_values]
             
-            # 限制显示点数
             if len(portfolio_values_clean) > 200:
                 step = len(portfolio_values_clean) // 200
                 display_values = portfolio_values_clean[::step]
@@ -2916,7 +3443,6 @@ def render_backtest():
                 display_values = portfolio_values_clean
                 display_dates = dates
             
-            # 创建图表
             fig = go.Figure()
             fig.add_trace(go.Scatter(
                 x=display_dates,
@@ -2928,7 +3454,6 @@ def render_backtest():
                 fillcolor='rgba(79, 172, 254, 0.1)'
             ))
             
-            # 添加初始资金参考线
             initial = result.get('initial_capital', 0)
             fig.add_hline(y=initial, line_dash="dash", line_color="gray", annotation_text=f"初始资金 ¥{initial:,.0f}")
             
@@ -2942,7 +3467,6 @@ def render_backtest():
             fig.update_yaxes(tickformat=",.0f")
             
             st.plotly_chart(fig, use_container_width=True)
-        # ===============================================
         
         # 交易明细
         trade_logs = result.get('trade_logs', [])
@@ -2971,13 +3495,20 @@ def render_backtest():
         
         # 回测参数摘要
         with st.expander("⚙️ 回测参数摘要"):
+            tech_w = st.session_state.temp_backtest_params["tech_weights"]
             st.markdown(f"""
-            - **回测周期**: {backtest_days}天
+            - **回测周期**: {st.session_state.temp_backtest_params['backtest_days']}天
             - **初始资金**: ¥{initial_capital:,.0f}
-            - **买入阈值**: {buy_threshold}分
-            - **卖出阈值**: {sell_threshold}分
-            - **单笔仓位**: {position_pct}%
-            - **最大持仓**: {max_positions}只
+            - **买入阈值**: {st.session_state.temp_backtest_params['buy_threshold']}分
+            - **卖出阈值**: {st.session_state.temp_backtest_params['sell_threshold']}分
+            - **单笔仓位**: {st.session_state.temp_backtest_params['position_pct']}%
+            - **最大持仓**: {st.session_state.temp_backtest_params['max_positions']}只
+            - **最大持仓天数**: {st.session_state.temp_backtest_params['max_hold_days']}天
+            - **MACD权重**: {tech_w.get('macd', 0.25)*100:.0f}%
+            - **KDJ权重**: {tech_w.get('kdj', 0.20)*100:.0f}%
+            - **布林带权重**: {tech_w.get('boll', 0.20)*100:.0f}%
+            - **RSI权重**: {tech_w.get('rsi', 0.15)*100:.0f}%
+            - **量价配合权重**: {tech_w.get('volume_price', 0.20)*100:.0f}%
             - **交易天数**: {result.get('days', 0)}天
             - **买入次数**: {result.get('buy_trades', 0)}次
             - **卖出次数**: {result.get('sell_trades', 0)}次
@@ -3002,7 +3533,6 @@ def place_gm_order(stock_code: str, volume: int, price: float, side: str = "buy"
         
         set_token(GM_TOKEN)
         
-        # 转换股票代码格式（掘金需要SHSE/SZSE前缀）
         if stock_code.endswith('.SH'):
             symbol = f"SHSE.{stock_code.replace('.SH', '')}"
         elif stock_code.endswith('.SZ'):
@@ -3049,10 +3579,8 @@ def render_live_signals():
     
     signals = []
     
-    # 从推荐池获取高评分股票
     for stock in recommended_stocks[:5]:
         score_raw = stock.get('current_score', 0)
-        # 确保 score 是数字类型
         try:
             score = float(score_raw) if score_raw else 0
         except (ValueError, TypeError):
@@ -3068,7 +3596,6 @@ def render_live_signals():
                 "confidence": f"{score:.0f}%"
             })
     
-    # 从实操池获取持仓信号
     for stock in live_stocks:
         current_price_raw = stock.get('current_price', 0)
         avg_cost_raw = stock.get('avg_cost', 0)
@@ -3121,9 +3648,7 @@ def render_live_signals():
                     st.caption(f"置信度: {signal['confidence']}")
             
             with col5:
-                # 掘金一键下单按钮
                 if signal['action'] in ["买入", "卖出(获利)"] and GM_AVAILABLE:
-                    # 使用简化价格（实际应从实时行情获取）
                     price = 100.0
                     volume = 100
                     side = "buy" if "买入" in signal['action'] else "sell"
@@ -3157,6 +3682,7 @@ def render_live_signals():
 print("第4部分加载完成")
 print("=" * 60)
 # ============================================================
+# ============================================================
 # 第5部分：主入口 + 侧边栏 + 顶部按钮 + 页面路由 + 管理员面板
 # 修复内容：
 # - 侧边栏只显示用户名（不显示邮箱后缀）
@@ -3164,6 +3690,8 @@ print("=" * 60)
 # - 添加缓存机制优化性能
 # - 添加股票名称缓存加载（解决Tushare频率超限）
 # - 管理员面板添加股票列表同步按钮
+# - 添加板块缓存初始化
+# - 添加板块管理入口
 # ============================================================
 
 # ==================== 自定义CSS ====================
@@ -3224,12 +3752,6 @@ def get_cached_stock_score(ts_code: str, stock_name: str = ""):
     return get_stock_score(ts_code, stock_name)
 
 
-@st.cache_data(ttl=7200)  # 缓存2小时
-def get_cached_sector_performance():
-    """缓存板块表现数据"""
-    return get_sector_performance()
-
-
 # ==================== 管理员辅助函数 ====================
 
 def get_all_users() -> list:
@@ -3288,7 +3810,6 @@ def admin_delete_user(user_id: str, user_email: str) -> tuple:
         response = requests.delete(url, headers=headers)
         
         if response.status_code in [200, 204]:
-            # 同时删除 user_settings
             settings_url = f"{SUPABASE_URL}/rest/v1/user_settings?user_id=eq.{user_id}"
             requests.delete(settings_url, headers=headers)
             return True, f"用户 {user_email} 已删除"
@@ -3555,10 +4076,8 @@ def render_admin_panel():
     with col1:
         if st.button("🔄 同步股票列表", key="sync_stocks", use_container_width=True):
             with st.spinner("正在同步股票列表（可能需要1分钟）..."):
-                # 清除现有缓存
                 global STOCK_NAME_CACHE
                 STOCK_NAME_CACHE = {}
-                # 执行同步
                 if sync_stock_basic_to_db():
                     st.success("✅ 股票列表同步成功！")
                     st.session_state.stock_cache_loaded = False
@@ -3566,10 +4085,20 @@ def render_admin_panel():
                 else:
                     st.error("❌ 同步失败，请检查Tushare连接")
     
+    with col2:
+        if st.button("🔄 同步热点板块", key="sync_hot_sectors", use_container_width=True):
+            with st.spinner("正在同步热点板块..."):
+                success, msg = sync_hot_sectors_to_db()
+                if success:
+                    st.success(msg)
+                    st.session_state.sector_cache_loaded = False
+                    st.rerun()
+                else:
+                    st.error(msg)
+    
     st.markdown("---")
     
     if st.button("退出管理员模式", use_container_width=True):
-        # 恢复管理员登录前的用户状态
         prev_user_id = st.session_state.get("admin_previous_user_id")
         prev_user_email = st.session_state.get("admin_previous_user_email")
         prev_access_token = st.session_state.get("admin_previous_access_token")
@@ -3581,7 +4110,7 @@ def render_admin_panel():
             st.session_state.user_email = prev_user_email
             st.session_state.access_token = prev_access_token
             st.session_state.refresh_token = prev_refresh_token
-            st.session_state.token_expiry = time.time() + 3600  # 重置过期时间
+            st.session_state.token_expiry = time.time() + 3600
         else:
             st.session_state.authenticated = False
             st.session_state.user_id = None
@@ -3608,19 +4137,15 @@ def render_sidebar():
         
         if st.session_state.authenticated and not st.session_state.admin_mode:
             user_email = st.session_state.user_email
-            # 提取用户名（@前面的部分）
             username = user_email.split('@')[0] if user_email else user_email
             user_id = st.session_state.user_id
             access_token = st.session_state.get("access_token")
             
-            # 直接从 get_user_profile 获取最新数据
             profile = get_user_profile(user_id, access_token)
             
-            # 从 profile 中直接获取值
             tier = profile.get("subscription_tier", "free")
             remaining = profile.get("free_trials_remaining", 0)
             
-            # 确保 remaining 是数字
             try:
                 remaining = int(remaining) if remaining else 0
             except (ValueError, TypeError):
@@ -3637,7 +4162,6 @@ def render_sidebar():
             </div>
             """, unsafe_allow_html=True)
             
-            # 升级按钮（仅免费用户）
             if tier == "free":
                 if st.button("💎 " + t()["upgrade"], key="sidebar_upgrade", use_container_width=True):
                     st.session_state.show_paywall = True
@@ -3653,6 +4177,13 @@ def render_sidebar():
         
         st.markdown("---")
         
+        # 板块管理入口
+        if st.session_state.authenticated and not st.session_state.admin_mode:
+            if st.button("📁 板块管理", key="sector_mgmt_btn", use_container_width=True):
+                st.session_state.show_sector_management = True
+                st.rerun()
+            st.markdown("---")
+        
         with st.expander(t()["about_header"], expanded=True):
             st.markdown(t()["about_text"])
         
@@ -3663,7 +4194,7 @@ def render_sidebar():
             st.markdown(t()["contact_email"])
         
         st.markdown("---")
-        st.caption("v3.0 | TechLife")
+        st.caption("v4.0 | TechLife")
         st.caption("数据: Tushare | 交易: 掘金 | 支付: Stripe")
 
 
@@ -3705,18 +4236,25 @@ def render_top_buttons():
 # ==================== 主页面 ====================
 
 def render_main_app():
-    """渲染主页面（5个模块）"""
+    """渲染主页面（5个模块 + 板块管理）"""
     if st.session_state.get("show_paywall", False):
         show_paywall()
         return
     
     handle_stripe_callback()
     
+    # 板块管理页面
+    if st.session_state.get("show_sector_management", False):
+        render_sector_management()
+        if st.button("返回主页", key="back_to_main", use_container_width=True):
+            st.session_state.show_sector_management = False
+            st.rerun()
+        return
+    
     # 获取用户名显示
     username = st.session_state.user_email.split('@')[0] if st.session_state.user_email else st.session_state.user_email
     st.markdown(f"<h3 style='text-align: left;'>{t()['welcome']}, {username}</h3>", unsafe_allow_html=True)
     
-    # 获取当前用户的 access_token
     access_token = st.session_state.get("access_token")
     user_id = st.session_state.user_id
     
@@ -3727,12 +4265,12 @@ def render_main_app():
     
     st.markdown("---")
     
-    # 使用缓存获取数据（提升性能）
     with st.spinner("加载数据中..."):
-        # 预加载缓存数据（只预加载，不强制同步）
         if TUSHARE_AVAILABLE and not STOCK_NAME_CACHE:
-            # 尝试从数据库加载缓存，但不强制同步（避免频率超限）
             load_stock_name_cache()
+        if not st.session_state.get("sector_cache_loaded", False):
+            init_sector_cache_on_startup()
+            st.session_state.sector_cache_loaded = True
     
     # 模块1：市场简报
     with st.container():
@@ -3769,12 +4307,11 @@ def main():
     
     init_session_state()
     
-    # ===== 只在首次加载时同步股票名称（解决Tushare频率超限）=====
+    # 加载缓存
     if not st.session_state.get("stock_cache_loaded", False):
         with st.spinner("加载股票数据..."):
             load_stock_name_cache()
             st.session_state.stock_cache_loaded = True
-    # ===========================================================
     
     render_sidebar()
     render_top_buttons()
@@ -3803,5 +4340,5 @@ if __name__ == "__main__":
 
 print("第5部分加载完成")
 print("=" * 60)
-print("所有代码加载完成！AI量化股票系统 v3.0 已就绪。")
+print("所有代码加载完成！AI量化股票系统 v4.0 已就绪。")
 print("=" * 60)
