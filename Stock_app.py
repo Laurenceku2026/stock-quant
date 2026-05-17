@@ -2003,7 +2003,7 @@ def run_real_backtest(
         # 1. 获取所有股票的历史数据
         stock_data = {}
         for ts_code in stock_codes:
-            df = get_stock_daily(ts_code, days=500)  # 获取足够长的历史数据
+            df = get_stock_daily(ts_code, days=500)
             if not df.empty:
                 stock_data[ts_code] = df
         
@@ -2013,23 +2013,21 @@ def run_real_backtest(
                 "error": "无法获取历史数据，请检查Tushare连接"
             }
         
-        # 2. 确定回测日期范围（取所有股票数据的最小最大日期）
+        # ========== 2. 确定回测日期范围（统一转换为datetime对象） ==========
         all_dates = []
         for df in stock_data.values():
-            all_dates.extend(df['date'].tolist())
+            for d in df['date'].tolist():
+                # 统一转换为datetime对象
+                if isinstance(d, str):
+                    try:
+                        all_dates.append(datetime.strptime(d, '%Y-%m-%d'))
+                    except:
+                        all_dates.append(d)
+                else:
+                    all_dates.append(d)
         
-        # 统一转换为datetime对象（修复日期比较错误的关键）
-        date_objects = []
-        for d in all_dates:
-            if isinstance(d, str):
-                try:
-                    date_objects.append(datetime.strptime(d, '%Y-%m-%d'))
-                except:
-                    date_objects.append(d)
-            else:
-                date_objects.append(d)
-        
-        all_dates = sorted(set(date_objects))
+        # 去重并排序
+        all_dates = sorted(set(all_dates))
         
         if len(all_dates) < 10:
             return {
@@ -2037,7 +2035,7 @@ def run_real_backtest(
                 "error": "历史数据不足，需要至少10个交易日"
             }
         
-        # 3. 过滤日期范围（统一使用datetime对象比较）
+        # ========== 3. 过滤日期范围（统一使用datetime比较） ==========
         start_datetime = None
         end_datetime = None
         
@@ -2053,7 +2051,7 @@ def run_real_backtest(
             except:
                 end_datetime = None
         
-        # 过滤日期（统一使用datetime比较）
+        # 过滤日期
         filtered_dates = []
         for d in all_dates:
             if start_datetime and d < start_datetime:
@@ -2072,10 +2070,10 @@ def run_real_backtest(
         
         # 4. 回测初始化
         capital = initial_capital
-        positions = {}  # {ts_code: {"shares": 数量, "buy_price": 买入价, "buy_date": 买入日期}}
-        portfolio_values = []  # 每日资产净值
-        trade_logs = []  # 交易日志
-        daily_returns = []  # 每日收益率
+        positions = {}
+        portfolio_values = []
+        trade_logs = []
+        daily_returns = []
         
         # 5. 逐日回测
         for current_date in all_dates:
@@ -2089,10 +2087,10 @@ def run_real_backtest(
                 
                 close_price = day_data['close'].iloc[0]
                 
-                # 获取截至当日的评分（使用当日及之前的数据）
+                # 获取截至当日的评分
                 df_until_date = df[df['date'] <= current_date]
                 if df_until_date.empty:
-                    score = 50  # 默认分数
+                    score = 50
                 else:
                     tech_result = calculate_technical_score(df_until_date)
                     score = tech_result["score"]
@@ -2115,13 +2113,10 @@ def run_real_backtest(
                     current_score = stock_info["score"]
                     position = positions[ts_code]
                     
-                    # 卖出条件：评分低于卖出阈值
                     if current_score <= sell_threshold:
-                        # 卖出
                         sell_value = position["shares"] * current_price
                         capital += sell_value
                         
-                        # 计算收益率
                         profit_pct = (current_price - position["buy_price"]) / position["buy_price"] * 100
                         
                         trade_logs.append({
@@ -2139,20 +2134,16 @@ def run_real_backtest(
             
             # 检查买入条件
             if len(positions) < max_positions:
-                # 计算单笔可用资金
                 available_capital = capital * (position_pct / 100)
                 
                 for stock in available_stocks:
                     if len(positions) >= max_positions:
                         break
                     
-                    # 检查是否已持仓
                     if stock["ts_code"] in positions:
                         continue
                     
-                    # 买入条件：评分高于买入阈值
                     if stock["score"] >= buy_threshold:
-                        # 买入
                         shares = int(available_capital // stock["price"])
                         if shares > 0:
                             buy_value = shares * stock["price"]
@@ -2185,53 +2176,52 @@ def run_real_backtest(
         
         # 6. 回测结束时平仓
         if positions:
-            for ts_code, position in list(positions.items()):
-                stock_info = next((s for s in available_stocks if s["ts_code"] == ts_code), None)
-                if stock_info:
-                    sell_value = position["shares"] * stock_info["price"]
-                    capital += sell_value
-                    
-                    profit_pct = (stock_info["price"] - position["buy_price"]) / position["buy_price"] * 100
-                    
-                    trade_logs.append({
-                        "date": "回测结束",
-                        "stock_code": ts_code,
-                        "stock_name": stock_info["name"],
-                        "action": "平仓",
-                        "price": round(stock_info["price"], 2),
-                        "shares": position["shares"],
-                        "amount": round(sell_value, 2),
-                        "profit_pct": round(profit_pct, 2)
-                    })
+            last_date = all_dates[-1] if all_dates else None
+            if last_date:
+                for ts_code, position in list(positions.items()):
+                    df = stock_data.get(ts_code)
+                    if df is not None:
+                        last_data = df[df['date'] == last_date]
+                        if not last_data.empty:
+                            last_price = last_data['close'].iloc[0]
+                            sell_value = position["shares"] * last_price
+                            capital += sell_value
+                            
+                            profit_pct = (last_price - position["buy_price"]) / position["buy_price"] * 100
+                            
+                            trade_logs.append({
+                                "date": last_date.strftime("%Y-%m-%d"),
+                                "stock_code": ts_code,
+                                "stock_name": get_stock_name_from_tushare(ts_code),
+                                "action": "平仓",
+                                "price": round(last_price, 2),
+                                "shares": position["shares"],
+                                "amount": round(sell_value, 2),
+                                "profit_pct": round(profit_pct, 2)
+                            })
             
             positions.clear()
-            # 最终资产净值
             portfolio_values.append(capital)
         
         # 7. 计算回测指标
         final_value = portfolio_values[-1] if portfolio_values else initial_capital
         total_return = (final_value - initial_capital) / initial_capital * 100
         
-        # 计算每日收益率
         for i in range(1, len(portfolio_values)):
             if portfolio_values[i-1] > 0:
                 daily_return = (portfolio_values[i] - portfolio_values[i-1]) / portfolio_values[i-1] * 100
                 daily_returns.append(daily_return)
         
-        # 计算年化收益率
         days = len(all_dates)
         annual_return = calculate_annual_return(total_return, days)
-        
-        # 计算夏普比率
         sharpe = calculate_sharpe_ratio(daily_returns)
-        
-        # 计算最大回撤
         max_drawdown = calculate_max_drawdown(portfolio_values)
         
-        # 计算胜率
-        win_trades = [t for t in trade_logs if t["action"] == "卖出" and t.get("profit_pct", 0) > 0]
-        loss_trades = [t for t in trade_logs if t["action"] == "卖出" and t.get("profit_pct", 0) <= 0]
+        win_trades = [t for t in trade_logs if t["action"] in ["卖出", "平仓"] and t.get("profit_pct", 0) > 0]
+        loss_trades = [t for t in trade_logs if t["action"] in ["卖出", "平仓"] and t.get("profit_pct", 0) <= 0]
         win_rate = len(win_trades) / (len(win_trades) + len(loss_trades)) * 100 if (len(win_trades) + len(loss_trades)) > 0 else 0
+        
+        date_strings = [d.strftime("%Y-%m-%d") for d in all_dates]
         
         return {
             "success": True,
@@ -2248,7 +2238,7 @@ def run_real_backtest(
             "days": days,
             "trade_logs": trade_logs,
             "portfolio_values": portfolio_values,
-            "dates": [d.strftime("%Y-%m-%d") for d in all_dates]
+            "dates": date_strings
         }
         
     except Exception as e:
