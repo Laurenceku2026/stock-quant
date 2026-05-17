@@ -1364,6 +1364,15 @@ def create_checkout_session(user_id: str, user_email: str, price_id: str) -> Tup
 
 
 def handle_stripe_callback():
+    # 最简单的测试
+    st.write("🔍 测试1: 进入函数")
+    
+    try:
+        import stripe
+        st.write("🔍 测试2: stripe 导入成功")
+        st.write(f"🔍 测试3: stripe 版本 = {stripe.__version__}")
+    except Exception as e:
+        st.write(f"🔍 测试2失败: {e}")
     """处理 Stripe 支付成功回调"""
     
     # 获取URL参数
