@@ -1322,10 +1322,7 @@ def delete_user_sector(user_id: str, sector_id: str, access_token: str = None) -
 # ==================== Stripe 支付函数 ====================
 
 def create_checkout_session(user_id: str, user_email: str, price_id: str) -> Tuple[Optional[str], Optional[str]]:
-    """
-    创建Stripe Checkout Session
-    返回: (session_url, error_message)
-    """
+    """创建Stripe Checkout Session"""
     if not STRIPE_SECRET_KEY:
         return None, "Stripe密钥未配置"
     
@@ -1333,7 +1330,13 @@ def create_checkout_session(user_id: str, user_email: str, price_id: str) -> Tup
         import stripe
         stripe.api_key = STRIPE_SECRET_KEY
         
+        # 获取当前应用的基础URL
+        # 如果是本地开发
+        # base_url = "http://localhost:8501"
+        # 如果是Streamlit Cloud
         base_url = "https://stock-quant-strategy.streamlit.app"
+        
+        # 关键：success_url 必须包含 session_id 参数
         success_url = f"{base_url}?session_id={{CHECKOUT_SESSION_ID}}"
         cancel_url = f"{base_url}?canceled=true"
         
@@ -1344,7 +1347,11 @@ def create_checkout_session(user_id: str, user_email: str, price_id: str) -> Tup
             mode='subscription',
             success_url=success_url,
             cancel_url=cancel_url,
-            metadata={'user_id': user_id, 'price_id': price_id}
+            metadata={
+                'user_id': user_id,
+                'user_email': user_email,
+                'price_id': price_id
+            }
         )
         
         return session.url, None
@@ -1354,6 +1361,7 @@ def create_checkout_session(user_id: str, user_email: str, price_id: str) -> Tup
 
 def handle_stripe_callback():
     """处理Stripe支付成功回调"""
+    # 获取URL参数
     query_params = st.query_params
     
     if "session_id" in query_params:
@@ -1370,48 +1378,38 @@ def handle_stripe_callback():
             
             if session.payment_status == "paid":
                 user_id = session.metadata.get("user_id")
-                user_email = session.customer_email
+                user_email = session.metadata.get("user_email")
                 
+                # 更新用户订阅
                 if user_id and user_id != "admin":
-                    # 更新用户订阅
-                    success = update_user_profile(user_id, {"subscription_tier": "pro"})
+                    # 更新数据库
+                    headers = get_supabase_headers(use_secret=True)
+                    url = f"{SUPABASE_URL}/rest/v1/user_settings?user_id=eq.{user_id}"
+                    data = {"subscription_tier": "pro"}
+                    response = requests.patch(url, headers=headers, json=data)
                     
-                    if success:
-                        # 同时更新当前 session_state
+                    if response.status_code in [200, 204]:
+                        st.success(f"✅ 支付成功！用户 {user_email} 已是专业版")
+                        st.balloons()
+                        
+                        # 更新当前session
                         if st.session_state.get("user_id") == user_id:
                             st.session_state.authenticated = True
-                            st.session_state.user_id = user_id
-                            st.session_state.user_email = user_email
                             st.session_state.subscription_tier = "pro"
                         
                         st.session_state.payment_processed = True
-                        st.success("✅ 支付成功！您已是专业版用户")
-                        st.balloons()
                         st.query_params.clear()
                         time.sleep(2)
                         st.rerun()
                     else:
-                        st.error("支付成功，但更新用户状态失败，请联系管理员")
+                        st.error(f"更新用户状态失败: {response.text}")
                 else:
-                    # 尝试通过邮箱查找用户
-                    if user_email:
-                        users = get_all_users()
-                        for u in users:
-                            if u.get("email") == user_email:
-                                update_user_profile(u["user_id"], {"subscription_tier": "pro"})
-                                st.success(f"✅ 支付成功！用户 {user_email} 已是专业版")
-                                st.balloons()
-                                st.query_params.clear()
-                                time.sleep(2)
-                                st.rerun()
-                                return
-                    st.warning("支付成功，但用户信息验证失败，请登录后联系管理员")
+                    st.warning("支付成功，但用户信息验证失败")
             else:
-                st.info("支付未完成，请完成支付后刷新页面")
+                st.info("支付未完成")
                 
         except Exception as e:
             st.error(f"验证支付状态失败: {e}")
-            st.info("请稍后刷新页面查看升级状态")
 
 
 # ==================== 数据解析函数 ====================
