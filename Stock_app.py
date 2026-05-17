@@ -2694,13 +2694,13 @@ def render_stock_analysis():
 # ==================== 模块4：回测功能 ====================
 
 def render_backtest():
-    """回测功能模块"""
+    """回测功能模块（真实回测 - 天数选择版）"""
     st.markdown(f"### {t()['module4_title']}")
     
     last_update = get_last_update_time("backtest")
     st.caption(f"📅 最后更新: {last_update}")
     
-    # ===== 添加：手动添加股票到回测池 =====
+    # ===== 手动添加股票到回测池 =====
     st.markdown("**➕ 手动添加股票到回测池**")
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -2738,7 +2738,6 @@ def render_backtest():
     if not stocks:
         st.info("暂无股票，请从推荐池添加或手动添加上方")
     else:
-        # 显示股票列表，带删除按钮
         for stock in stocks:
             col1, col2, col3 = st.columns([3, 1, 1])
             with col1:
@@ -2749,10 +2748,9 @@ def render_backtest():
                     st.rerun()
         st.caption(f"共 {len(stocks)} 只股票")
     
-    # ... 后续回测参数设置和运行按钮保持不变 ...
-    
-    # 获取回测池
-    stocks = get_backtest_pool(st.session_state.user_id, st.session_state.get("access_token"))
+    # 如果没有股票，不显示回测参数
+    if not stocks:
+        return
     
     # ==================== 回测参数配置 ====================
     st.markdown("**⚙️ 回测参数设置**")
@@ -2764,11 +2762,10 @@ def render_backtest():
             "回测周期",
             options=[30, 90, 180, 365, 730],
             format_func=lambda x: f"{x}天 ({x//30}个月)" if x < 365 else f"{x}天 ({x//365}年)",
-            index=3,  # 默认365天
+            index=3,
             key="backtest_days_select"
         )
         
-        # 自定义天数选项
         use_custom = st.checkbox("自定义天数", key="use_custom_days")
         if use_custom:
             custom_days = st.number_input("自定义天数", min_value=1, max_value=1095, value=90, step=10, key="custom_days")
@@ -2824,24 +2821,12 @@ def render_backtest():
             key="backtest_max_positions"
         )
     
-    # ==================== 显示回测池（始终显示） ====================
-    st.markdown("**📋 回测池股票**")
-    if not stocks:
-        st.info("暂无股票，请从推荐池添加")
-    else:
-        stock_names = []
-        for stock in stocks:
-            stock_names.append(f"{stock['stock_code']} ({stock.get('stock_name', '')})")
-        st.caption(f"待回测股票: {', '.join(stock_names)}")
-    
     # 运行回测按钮
     col1, col2 = st.columns([1, 4])
     with col1:
         run_btn = st.button("📊 运行回测", key="run_backtest", use_container_width=True, type="primary")
     
     if run_btn:
-        st.write("🔍 运行回测按钮被点击")  # 添加这行
-        st.write(f"🔍 stocks 数量: {len(stocks)}")    
         if not stocks:
             st.warning("回测池为空，请先从推荐池添加股票")
             return
@@ -2850,11 +2835,9 @@ def render_backtest():
             st.warning("免费次数已用完，请升级到专业版")
             return
         
-        # 计算回测日期范围（使用天数）
+        # 计算回测日期范围
         end_date = datetime.now().strftime("%Y%m%d")
         start_date = (datetime.now() - timedelta(days=backtest_days)).strftime("%Y%m%d")
-        st.write(f"🔍 计算后 start_date: {start_date}")
-        st.write(f"🔍 计算后 end_date: {end_date}")
         
         with st.spinner("正在运行回测，请稍候..."):
             stock_codes = [s["stock_code"] for s in stocks]
@@ -2869,11 +2852,10 @@ def render_backtest():
                 position_pct=position_pct,
                 max_positions=max_positions
             )
-            st.write(f"🔍 回测结果: {result}")  # 添加这行
+            
             st.session_state.backtest_result = result
             update_last_update_time("backtest")
         
-        # 显示回测结果
         if result.get("success"):
             st.success(f"✅ 回测完成！共 {result.get('days', 0)} 个交易日")
         else:
@@ -2910,17 +2892,22 @@ def render_backtest():
             st.metric("初始资金", f"¥{result.get('initial_capital', 0):,.0f}")
             st.metric("最终资金", f"¥{result.get('final_value', 0):,.0f}")
         
-        # 资金曲线图# 资金曲线图
+        # ========== 资金曲线图（修复版） ==========
         portfolio_values = result.get('portfolio_values', [])
         dates = result.get('dates', [])
         
         if portfolio_values and dates:
             st.markdown("**📈 资金曲线图**")
             
-            # 确保 portfolio_values 中的值是普通 float
-            portfolio_values_clean = [float(v) if hasattr(v, '__float__') else v for v in portfolio_values]
+            # 转换 np.float64 为普通 float
+            portfolio_values_clean = []
+            for v in portfolio_values:
+                if hasattr(v, '__float__'):
+                    portfolio_values_clean.append(float(v))
+                else:
+                    portfolio_values_clean.append(v)
             
-            # 限制显示点数（避免过密）
+            # 限制显示点数
             if len(portfolio_values_clean) > 200:
                 step = len(portfolio_values_clean) // 200
                 display_values = portfolio_values_clean[::step]
@@ -2929,35 +2916,33 @@ def render_backtest():
                 display_values = portfolio_values_clean
                 display_dates = dates
             
-            try:
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=display_dates,
-                    y=display_values,
-                    mode='lines',
-                    name='资产净值',
-                    line=dict(color='#4facfe', width=2),
-                    fill='tozeroy',
-                    fillcolor='rgba(79, 172, 254, 0.1)'
-                ))
-                
-                # 添加初始资金参考线
-                initial = result.get('initial_capital', 0)
-                fig.add_hline(y=initial, line_dash="dash", line_color="gray", annotation_text=f"初始资金 ¥{initial:,.0f}")
-                
-                fig.update_layout(
-                    title="账户资产净值变化",
-                    xaxis_title="日期",
-                    yaxis_title="资产净值 (元)",
-                    height=400,
-                    hovermode='x unified'
-                )
-                fig.update_yaxis(tickformat=",.0f")
-                
-                st.plotly_chart(fig, use_container_width=True)
-            except Exception as e:
-                st.error(f"绘制资金曲线图失败: {e}")
-                st.write("原始数据:", portfolio_values_clean[:5])
+            # 创建图表
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=display_dates,
+                y=display_values,
+                mode='lines',
+                name='资产净值',
+                line=dict(color='#4facfe', width=2),
+                fill='tozeroy',
+                fillcolor='rgba(79, 172, 254, 0.1)'
+            ))
+            
+            # 添加初始资金参考线
+            initial = result.get('initial_capital', 0)
+            fig.add_hline(y=initial, line_dash="dash", line_color="gray", annotation_text=f"初始资金 ¥{initial:,.0f}")
+            
+            fig.update_layout(
+                title="账户资产净值变化",
+                xaxis_title="日期",
+                yaxis_title="资产净值 (元)",
+                height=400,
+                hovermode='x unified'
+            )
+            fig.update_yaxes(tickformat=",.0f")
+            
+            st.plotly_chart(fig, use_container_width=True)
+        # ===============================================
         
         # 交易明细
         trade_logs = result.get('trade_logs', [])
