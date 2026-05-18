@@ -763,7 +763,24 @@ def init_sector_cache_on_startup():
             refresh_sector_cache()
         st.session_state.sector_cache_loaded = True
 
-
+def get_sector_members_from_cache(sector_name: str, limit: int = 10) -> List[Dict]:
+    """
+    从缓存读取板块成分股
+    返回: [{"stock_code": "000001.SZ", "stock_name": "平安银行"}, ...]
+    """
+    try:
+        headers = get_supabase_headers(use_secret=False)
+        import urllib.parse
+        encoded_name = urllib.parse.quote(sector_name)
+        url = f"{SUPABASE_URL}/rest/v1/sector_members_cache?sector_name=eq.{encoded_name}&limit={limit}"
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code == 200:
+            return response.json()
+        return []
+    except Exception as e:
+        print(f"读取成分股缓存失败 {sector_name}: {e}")
+        return []
 # ==================== 掘金初始化 ====================
 def init_gm():
     """初始化掘金连接"""
@@ -1658,6 +1675,8 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
         
         # 2. 从缓存读取板块成分股（使用新函数）
         members = get_sector_members_from_cache(sector_name, limit=10)
+        if not members:
+            members = get_sector_members_fallback(sector_name, limit=10)
         
         if not members:
             # 如果缓存没有成分股，尝试从预置板块获取
