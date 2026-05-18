@@ -3743,6 +3743,7 @@ def get_index_technical_indicators(index_code: str = "000001.SH") -> Dict:
 
 def render_market_brief():
     """市场简报模块（增加上证指数技术指标 + 独立权重配置）"""
+    st.write("DEBUG: render_market_brief 函数开始执行")  # 临时调试
     st.markdown(f"### {t()['module1_title']}")
 
     # 右上角：权重配置 + 刷新按钮
@@ -5396,8 +5397,10 @@ def render_sidebar():
         col_status1, col_status2 = st.columns(2)
         with col_status1:
             if TUSHARE_AVAILABLE:
+                 st.write("DEBUG: Tushare 可用")
                 st.markdown("✅ Tushare")
             else:
+                st.write("DEBUG: Tushare 不可用")
                 st.markdown("❌ Tushare")
         with col_status2:
             if GM_AVAILABLE:
