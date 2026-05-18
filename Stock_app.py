@@ -2988,9 +2988,9 @@ def get_index_technical_indicators(index_code: str = "000001.SH") -> Dict:
     if not TUSHARE_AVAILABLE:
         return {
             "macd": {"signal_level": "neutral", "score": 50},
-            "kdj": {"signal_level": "neutral", "score": 50},
+            "kdj": {"k": 50, "d": 50, "j": 50, "signal_level": "neutral", "score": 50},
             "boll": {"signal_level": "neutral", "score": 50},
-            "rsi": {"signal_level": "neutral", "score": 50},
+            "rsi": {"rsi": 50, "signal_level": "neutral", "score": 50},
             "trend": "数据不可用",
             "trend_score": 50,
             "summary": "Tushare未连接，无法获取大盘指标"
@@ -3000,9 +3000,9 @@ def get_index_technical_indicators(index_code: str = "000001.SH") -> Dict:
     if df.empty:
         return {
             "macd": {"signal_level": "neutral", "score": 50},
-            "kdj": {"signal_level": "neutral", "score": 50},
+            "kdj": {"k": 50, "d": 50, "j": 50, "signal_level": "neutral", "score": 50},
             "boll": {"signal_level": "neutral", "score": 50},
-            "rsi": {"signal_level": "neutral", "score": 50},
+            "rsi": {"rsi": 50, "signal_level": "neutral", "score": 50},
             "trend": "数据不足",
             "trend_score": 50,
             "summary": "无法获取上证指数数据"
@@ -3057,7 +3057,7 @@ def get_index_technical_indicators(index_code: str = "000001.SH") -> Dict:
     
     return {
         "macd": macd,
-        "kdj": kdj,
+        "kdj": kdj,  # kdj 包含 k, d, j, signal_level, score
         "boll": boll,
         "rsi": rsi,
         "trend": trend,
@@ -3109,16 +3109,19 @@ def render_market_brief():
                           "空头" if index_indicators["macd"]["signal_level"] == "bearish" else "中性"
             st.metric("MACD", macd_status, delta=f"{index_indicators['macd']['score']:.0f}分")
         with col3:
-            kdj_status = f"K:{index_indicators['kdj']['k']:.0f}/D:{index_indicators['kdj']['d']:.0f}"
-            st.metric("KDJ", kdj_status, delta=f"{index_indicators['kdj']['score']:.0f}分")
+            kdj_data = index_indicators.get('kdj', {})
+            k_val = kdj_data.get('k', 50)
+            d_val = kdj_data.get('d', 50)
+            kdj_status = f"K:{k_val:.0f}/D:{d_val:.0f}"
+            st.metric("KDJ", kdj_status, delta=f"{kdj_data.get('score', 50):.0f}分")
         with col4:
-            st.metric("RSI", f"{index_indicators['rsi']['rsi']:.0f}", 
-                     delta="超买" if index_indicators['rsi']['rsi'] > 70 else "超卖" if index_indicators['rsi']['rsi'] < 30 else "正常")
+            rsi_val = index_indicators.get('rsi', {}).get('rsi', 50)
+            st.metric("RSI", f"{rsi_val:.0f}", 
+                     delta="超买" if rsi_val > 70 else "超卖" if rsi_val < 30 else "正常")
         with col5:
             boll_pos = "上轨" if index_indicators['boll']['position'] > 0.7 else \
                        "下轨" if index_indicators['boll']['position'] < 0.3 else "中轨"
-            st.metric("布林带", boll_pos, delta=f"{index_indicators['boll']['score']:.0f}分")
-        
+            st.metric("布林带", boll_pos, delta=f"{index_indicators['boll']['score']:.0f}分")        
         st.caption(f"📝 {index_indicators['summary']}")
         st.markdown("---")
         
