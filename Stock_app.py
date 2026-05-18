@@ -915,19 +915,28 @@ def get_concept_stocks_tushare(concept_name: str) -> List[Dict]:
 def get_hot_concepts_tushare(limit: int = 10) -> List[Dict]:
     st.write("🔥 DEBUG: get_hot_concepts_tushare 被调用")
     print("🔥 DEBUG: get_hot_concepts_tushare 被调用")
-    """获取热门概念板块列表（使用 Tushare）"""
+    
     if not TUSHARE_AVAILABLE:
+        st.write("❌ Tushare 不可用")
         return []
+    
+    st.write("✅ Tushare 可用，开始获取概念板块...")
     
     try:
         # 获取所有概念板块
         concept_df = TUSHARE_PRO.concept()
+        st.write(f"📊 获取到概念板块数量: {len(concept_df) if concept_df is not None else 0}")
+        
         if concept_df is None or concept_df.empty:
+            st.write("❌ 概念板块数据为空")
             return []
         
-        # 获取每个板块的行情数据来排序
         hot_concepts = []
-        for _, row in concept_df.iterrows():
+        total = len(concept_df)
+        
+        for idx, (_, row) in enumerate(concept_df.iterrows()):
+            st.write(f"🔄 处理第 {idx+1}/{total} 个板块: {row.get('name', '')}")
+            
             concept_name = row.get('name', '')
             concept_code = row.get('code', '')
             
@@ -942,7 +951,8 @@ def get_hot_concepts_tushare(limit: int = 10) -> List[Dict]:
                     avg_pct = daily_df['pct_chg'].mean()
                 else:
                     avg_pct = 0
-            except:
+            except Exception as e:
+                st.write(f"⚠️ 获取板块行情失败 {concept_name}: {e}")
                 avg_pct = 0
             
             hot_concepts.append({
@@ -951,12 +961,18 @@ def get_hot_concepts_tushare(limit: int = 10) -> List[Dict]:
                 "pct_chg": round(avg_pct, 2)
             })
         
+        st.write(f"📊 处理完成，共 {len(hot_concepts)} 个板块")
+        
         # 按涨跌幅排序
         hot_concepts.sort(key=lambda x: x.get('pct_chg', 0), reverse=True)
-        return hot_concepts[:limit]
+        result = hot_concepts[:limit]
+        st.write(f"✅ 返回前 {len(result)} 个热门板块")
+        
+        return result
         
     except Exception as e:
-        print(f"Tushare 获取热门板块失败: {e}")
+        st.write(f"❌ 获取热门板块失败: {e}")
+        print(f"获取热门板块失败: {e}")
         return []
 
 
