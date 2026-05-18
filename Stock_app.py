@@ -781,6 +781,26 @@ def get_sector_members_from_cache(sector_name: str, limit: int = 10) -> List[Dic
     except Exception as e:
         print(f"读取成分股缓存失败 {sector_name}: {e}")
         return []
+# ========================================
+def get_sector_members_fallback(sector_name: str, limit: int = 10) -> List[Dict]:
+    """
+    备用方案：从 HOT_SECTORS 预置板块读取成分股
+    当数据库缓存为空时使用
+    """
+    if sector_name in HOT_SECTORS:
+        sector_info = HOT_SECTORS[sector_name]
+        members = []
+        stocks = sector_info.get("stocks", [])
+        names = sector_info.get("names", [])
+        for i, code in enumerate(stocks[:limit]):
+            name = names[i] if i < len(names) else code
+            members.append({
+                "stock_code": code,
+                "stock_name": name
+            })
+        return members
+    return []
+
 # ==================== 掘金初始化 ====================
 def init_gm():
     """初始化掘金连接"""
