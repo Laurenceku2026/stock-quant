@@ -4334,50 +4334,6 @@ print("=" * 60)
 # - 添加各模块权重初始化
 # ============================================================
 
-# ==================== 自定义CSS ====================
-st.markdown("""
-<style>
-    .main-header {
-        text-align: center;
-        margin-bottom: 1rem;
-    }
-    
-    .sidebar-user-info {
-        background-color: #f0f2f6;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        margin-bottom: 1rem;
-    }
-    
-    .stButton button {
-        border-radius: 0.5rem;
-        transition: all 0.2s;
-    }
-    
-    .stDataFrame {
-        font-size: 0.9rem;
-    }
-    
-    .stMetric {
-        text-align: center;
-    }
-    
-    .signal-s { color: #ff4b4b; font-weight: bold; }
-    .signal-a { color: #ff6b6b; font-weight: bold; }
-    .signal-b { color: #ffaa00; font-weight: bold; }
-    .signal-c { color: #ff8800; font-weight: bold; }
-    .signal-d { color: #888888; font-weight: bold; }
-    
-    .market-selector {
-        margin-bottom: 1rem;
-        padding: 0.5rem;
-        background-color: #f8f9fa;
-        border-radius: 0.5rem;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-
 # ==================== 缓存优化函数 ====================
 
 @st.cache_data(ttl=3600)  # 缓存1小时
@@ -5105,6 +5061,48 @@ def main():
 
 if __name__ == "__main__":
     main()
+# ==================== 自定义CSS ====================
+st.markdown("""
+<style>
+    .main-header {
+        text-align: center;
+        margin-bottom: 1rem;
+    }
+    
+    .sidebar-user-info {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin-bottom: 1rem;
+    }
+    
+    .stButton button {
+        border-radius: 0.5rem;
+        transition: all 0.2s;
+    }
+    
+    .stDataFrame {
+        font-size: 0.9rem;
+    }
+    
+    .stMetric {
+        text-align: center;
+    }
+    
+    .signal-s { color: #ff4b4b; font-weight: bold; }
+    .signal-a { color: #ff6b6b; font-weight: bold; }
+    .signal-b { color: #ffaa00; font-weight: bold; }
+    .signal-c { color: #ff8800; font-weight: bold; }
+    .signal-d { color: #888888; font-weight: bold; }
+    
+    .market-selector {
+        margin-bottom: 1rem;
+        padding: 0.5rem;
+        background-color: #f8f9fa;
+        border-radius: 0.5rem;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 
 print("第5部分加载完成")
