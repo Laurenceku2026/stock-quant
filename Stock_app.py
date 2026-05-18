@@ -2595,37 +2595,43 @@ def calculate_full_score(
     ts_code: str, 
     sector_code: str = None, 
     sector_name: str = None,
-    tech_weights: Dict = None
+    user_weights: Dict = None  # 传入用户配置的4层权重
 ) -> Dict:
     """
     完整评分引擎
-    综合得分 = 板块热度 × 0.40 + 龙头识别 × 0.30 + 技术指标 × 0.20 + 长短期趋势 × 0.10
+    支持4层权重：板块热度、龙头识别、技术指标、长短期趋势
     """
-    # 1. 板块热度得分（40%）
+    # 如果没有传入权重，使用默认值（个股分析风格）
+    if user_weights is None:
+        user_weights = {"sector_heat": 0.25, "leader": 0.15, "technical": 0.40, "trend": 0.20}
+    
+    # 1. 板块热度得分
     sector_heat_score = calculate_sector_heat_score(sector_code, sector_name)
     
-    # 2. 龙头识别得分（30%）
+    # 2. 龙头识别得分
     leader_score = calculate_leader_score(ts_code, sector_code)
     
-    # 3. 技术指标得分（20%）
+    # 3. 技术指标得分（内部还有子权重，单独处理）
     df = get_stock_daily(ts_code, days=120)
     if df.empty:
         tech_score = 50
         tech_details = {}
     else:
-        tech_result = calculate_technical_score(df, tech_weights)
+        # 技术指标子权重从另一个地方获取
+        tech_sub_weights = user_weights.get("tech_weights", TECH_WEIGHTS)
+        tech_result = calculate_technical_score(df, tech_sub_weights)
         tech_score = tech_result['score']
         tech_details = tech_result['details']
     
-    # 4. 长短期趋势得分（10%）
+    # 4. 长短期趋势得分
     trend_score = calculate_trend_score(df) if not df.empty else 50
     
-    # 5. 计算总分
+    # 5. 使用4层权重计算总分
     total_score = (
-        sector_heat_score * 0.40 +
-        leader_score * 0.30 +
-        tech_score * 0.20 +
-        trend_score * 0.10
+        sector_heat_score * user_weights.get("sector_heat", 0.25) +
+        leader_score * user_weights.get("leader", 0.15) +
+        tech_score * user_weights.get("technical", 0.40) +
+        trend_score * user_weights.get("trend", 0.20)
     )
     
     # 确定等级
@@ -2649,7 +2655,7 @@ def calculate_full_score(
         "tech_score": round(tech_score, 2),
         "trend_score": round(trend_score, 2),
         "tech_details": tech_details,
-        "stock_name": get_stock_name_from_tushare(ts_code)
+        "user_weights": user_weights
     }
 
 def get_stock_score(ts_code: str, stock_name: str = "", tech_weights: Dict = None, sector_code: str = None, sector_name: str = None) -> Dict:
@@ -3304,32 +3310,30 @@ MODULE_WEIGHT_KEYS = {
 }
 
 def get_module_weights(module_name: str) -> Dict:
-    """
-    获取指定模块的权重配置
-    如果模块没有独立配置，则返回默认权重
-    """
     key = MODULE_WEIGHT_KEYS.get(module_name)
     if not key:
-        return TECH_WEIGHTS.copy()
+        return {
+            "sector_heat": 0.40,
+            "leader": 0.30,
+            "technical": 0.20,
+            "trend": 0.10
+        }
     
     weights = st.session_state.get(key)
     if weights is None:
-        # 初始化：从用户回测设置复制（个股分析用）或使用默认值
-        if module_name == "stock_analysis":
-            # 个股分析优先使用用户保存的回测参数中的权重
-            user_settings = get_user_backtest_settings(
-                st.session_state.user_id, 
-                st.session_state.get("access_token")
-            )
-            weights = user_settings.get("tech_weights", TECH_WEIGHTS.copy())
-        else:
-            weights = TECH_WEIGHTS.copy()
+        weights = {
+            "sector_heat": 0.40,
+            "leader": 0.30,
+            "technical": 0.20,
+            "trend": 0.10
+        }
         st.session_state[key] = weights
     
-    # 确保所有权重键都存在
-    for key_name in TECH_WEIGHTS.keys():
-        if key_name not in weights:
-            weights[key_name] = TECH_WEIGHTS[key_name]
+    # 确保所有键都存在（兼容旧数据）
+    default_keys = {"sector_heat": 0.40, "leader": 0.30, "technical": 0.20, "trend": 0.10}
+    for k, default_val in default_keys.items():
+        if k not in weights:
+            weights[k] = default_val
     
     return weights
 
@@ -3345,54 +3349,79 @@ def save_module_weights(module_name: str, weights: Dict):
 
 def render_weight_config_popover(module_name: str, target_module_title: str):
     """
-    渲染权重配置弹出框（放在每个模块的右上角）
-    module_name: 模块标识（market_brief, recommended, stock_analysis, backtest, live_signals）
-    target_module_title: 显示的目标模块标题
+    渲染权重配置弹出框（支持4个层级，各模块独立配置）
     """
-    # 获取当前模块的权重
     current_weights = get_module_weights(module_name)
+    default_weights = get_module_default_weights(module_name)
     
-    # 使用 popover 显示权重配置
     with st.popover("⚙️ 权重配置", use_container_width=False):
-        st.markdown(f"**{target_module_title} - 技术指标权重**")
-        st.caption("调整各技术指标的权重（自动保存）")
+        st.markdown(f"**{target_module_title} - 权重配置**")
+        st.caption("调整各层级的权重（自动保存，总和应为100%）")
+        
+        # 获取当前权重值（百分比）
+        sector_pct = current_weights.get("sector_heat", 0.25) * 100
+        leader_pct = current_weights.get("leader", 0.15) * 100
+        tech_pct = current_weights.get("technical", 0.40) * 100
+        trend_pct = current_weights.get("trend", 0.20) * 100
+        
+        # 获取范围限制
+        sector_min, sector_max = WEIGHT_RANGES["sector_heat"]
+        leader_min, leader_max = WEIGHT_RANGES["leader"]
+        tech_min, tech_max = WEIGHT_RANGES["technical"]
+        trend_min, trend_max = WEIGHT_RANGES["trend"]
         
         col1, col2 = st.columns(2)
-        
-        # 获取当前权重值（转换为百分比显示）
-        macd_pct = current_weights.get("macd", 0.25) * 100
-        kdj_pct = current_weights.get("kdj", 0.20) * 100
-        boll_pct = current_weights.get("boll", 0.20) * 100
-        rsi_pct = current_weights.get("rsi", 0.15) * 100
-        vp_pct = current_weights.get("volume_price", 0.20) * 100
-        
         with col1:
-            new_macd = st.slider("MACD权重", 0, 50, value=int(macd_pct), step=5, key=f"{module_name}_macd")
-            new_kdj = st.slider("KDJ权重", 0, 50, value=int(kdj_pct), step=5, key=f"{module_name}_kdj")
-            new_boll = st.slider("布林带权重", 0, 50, value=int(boll_pct), step=5, key=f"{module_name}_boll")
-        
+            new_sector = st.slider(
+                "板块热度权重", 
+                sector_min, sector_max, 
+                value=int(sector_pct), 
+                step=5,
+                key=f"{module_name}_sector"
+            )
+            new_leader = st.slider(
+                "龙头识别权重", 
+                leader_min, leader_max, 
+                value=int(leader_pct), 
+                step=5,
+                key=f"{module_name}_leader"
+            )
         with col2:
-            new_rsi = st.slider("RSI权重", 0, 50, value=int(rsi_pct), step=5, key=f"{module_name}_rsi")
-            new_vp = st.slider("量价配合权重", 0, 50, value=int(vp_pct), step=5, key=f"{module_name}_vp")
+            new_tech = st.slider(
+                "技术指标权重", 
+                tech_min, tech_max, 
+                value=int(tech_pct), 
+                step=5,
+                key=f"{module_name}_tech"
+            )
+            new_trend = st.slider(
+                "长短期趋势权重", 
+                trend_min, trend_max, 
+                value=int(trend_pct), 
+                step=5,
+                key=f"{module_name}_trend"
+            )
         
-        # 归一化权重
-        total = new_macd + new_kdj + new_boll + new_rsi + new_vp
+        # 显示总和
+        total = new_sector + new_leader + new_tech + new_trend
+        if total != 100:
+            st.warning(f"⚠️ 当前总和为 {total}%，建议调整为 100%")
+        else:
+            st.success(f"✅ 总和为 {total}%")
+        
+        # 归一化保存（如果用户手动调整到100%，直接使用；否则按比例归一化）
         if total > 0:
             new_weights = {
-                "macd": new_macd / total,
-                "kdj": new_kdj / total,
-                "boll": new_boll / total,
-                "rsi": new_rsi / total,
-                "volume_price": new_vp / total
+                "sector_heat": new_sector / total,
+                "leader": new_leader / total,
+                "technical": new_tech / total,
+                "trend": new_trend / total
             }
             save_module_weights(module_name, new_weights)
         
-        total_pct = sum(new_weights.values()) * 100
-        st.caption(f"当前权重总和: {total_pct:.0f}%")
-        
-        # 重置按钮
+        # 重置按钮（重置为该模块的默认权重）
         if st.button("重置为默认值", key=f"{module_name}_reset_weights", use_container_width=True):
-            save_module_weights(module_name, TECH_WEIGHTS.copy())
+            save_module_weights(module_name, get_module_default_weights(module_name))
             st.rerun()
 
 
@@ -4696,23 +4725,41 @@ def get_cached_stock_score(ts_code: str, stock_name: str = ""):
 
 def init_all_module_weights():
     """
-    初始化所有5个模块的独立权重配置
-    在用户登录后调用一次
+    初始化所有5个模块的独立权重配置（4个层级）
+    每个模块使用各自的默认权重
     """
-    # 获取用户保存的回测参数中的权重（作为个股分析的初始值）
-    user_settings = get_user_backtest_settings(
-        st.session_state.user_id, 
-        st.session_state.get("access_token")
-    )
-    user_weights = user_settings.get("tech_weights", TECH_WEIGHTS.copy())
-    
-    # 定义模块列表及其初始权重来源
+    # 定义各模块的4层权重默认值
     modules_to_init = [
-        ("weights_market_brief", TECH_WEIGHTS.copy()),      # 市场简报使用默认权重
-        ("weights_recommended", TECH_WEIGHTS.copy()),       # 推荐股票池使用默认权重
-        ("weights_stock_analysis", user_weights.copy()),    # 个股分析使用用户保存的权重
-        ("weights_backtest", user_weights.copy()),          # 回测功能使用用户保存的权重
-        ("weights_live_signals", user_weights.copy())       # 实操信号使用用户保存的权重（默认复制个股分析）
+        ("weights_market_brief", {      # 市场简报
+            "sector_heat": 0.40,
+            "leader": 0.30,
+            "technical": 0.20,
+            "trend": 0.10
+        }),
+        ("weights_recommended", {       # 推荐股票池
+            "sector_heat": 0.40,
+            "leader": 0.30,
+            "technical": 0.20,
+            "trend": 0.10
+        }),
+        ("weights_stock_analysis", {    # 个股分析
+            "sector_heat": 0.25,
+            "leader": 0.15,
+            "technical": 0.40,
+            "trend": 0.20
+        }),
+        ("weights_backtest", {          # 回测功能
+            "sector_heat": 0.25,
+            "leader": 0.15,
+            "technical": 0.40,
+            "trend": 0.20
+        }),
+        ("weights_live_signals", {      # 实操信号
+            "sector_heat": 0.25,
+            "leader": 0.15,
+            "technical": 0.40,
+            "trend": 0.20
+        })
     ]
     
     for key, default_weights in modules_to_init:
