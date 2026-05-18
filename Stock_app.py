@@ -2644,13 +2644,38 @@ def calculate_technical_score(df: pd.DataFrame, tech_weights: Dict = None) -> Di
 # ==================== 完整评分引擎（板块热度 + 龙头识别 + 技术指标 + 长短期趋势） ====================
 
 def calculate_sector_heat_score(sector_code: str = None, sector_name: str = None) -> float:
-    print(f"🔥 calculate_sector_heat_score 被调用，参数: sector_code={sector_code}, sector_name={sector_name}")
     """
-    计算板块热度得分（使用 Tushare concept_daily）
+    计算板块热度得分
     权重：占综合评分的 40%
+    使用预置板块预设分数，快速稳定
     """
-    if not TUSHARE_AVAILABLE:
-        return 50.0
+    print(f"🔥 calculate_sector_heat_score 被调用，参数: sector_code={sector_code}, sector_name={sector_name}")
+    
+    # 预置板块热度预设分数（根据市场热度手动调整）
+    preset_scores = {
+        "光模块/CPO": 85,
+        "人工智能": 80,
+        "半导体": 75,
+        "算力": 70,
+        "机器人": 65
+    }
+    
+    # 如果有板块名称且在预设中，返回预设分数
+    if sector_name and sector_name in preset_scores:
+        score = preset_scores[sector_name]
+        print(f"📊 板块 {sector_name} 热度得分: {score}")
+        return float(score)
+    
+    # 如果有板块代码（备用），尝试匹配
+    if sector_code:
+        for name, score in preset_scores.items():
+            if sector_code in name or name in str(sector_code):
+                print(f"📊 板块 {sector_code} 匹配到 {name}，得分: {score}")
+                return float(score)
+    
+    # 默认返回50分
+    print(f"⚠️ 未找到板块 {sector_name or sector_code} 的热度预设，返回默认值50")
+    return 50.0
     
     try:
         # 如果没有板块信息，返回默认分
@@ -2691,37 +2716,66 @@ def calculate_sector_heat_score(sector_code: str = None, sector_name: str = None
 
 def calculate_leader_score(stock_code: str, sector_code: str = None) -> float:
     """
-    计算龙头识别得分（使用 Tushare concept_detail）
+    计算龙头识别得分
     权重：占综合评分的 30%
+    使用预置板块个股排名（快速稳定）
     """
+    print(f"👑 calculate_leader_score 被调用，参数: stock_code={stock_code}, sector_code={sector_code}")
+    
     if not sector_code:
         return 50.0
     
-    try:
-        # sector_code 实际传入的是板块名称
-        members = get_concept_stocks_tushare(sector_code)
-        
-        if not members:
-            return 50.0
-        
-        # 查找个股排名
-        rank = 0
-        for member in members:
-            if member['code'] == stock_code:
-                rank = member.get('rank', 0)
-                break
-        
-        if rank > 0:
-            # 排名越靠前得分越高
-            rank_score = 100 * (1 - rank / len(members))
+    # 预置板块个股龙头得分（sector_code 实际是板块名称）
+    preset_ranks = {
+        "光模块/CPO": {
+            "300308.SZ": 95,   # 中际旭创 - 绝对龙头
+            "300394.SZ": 85,   # 天孚通信
+            "300502.SZ": 80,   # 新易盛
+            "688313.SH": 70,   # 仕佳光子
+            "301191.SZ": 65    # 中瓷电子
+        },
+        "人工智能": {
+            "002230.SZ": 95,   # 科大讯飞 - 龙头
+            "002415.SZ": 85,   # 海康威视
+            "300058.SZ": 75,   # 蓝色光标
+            "002920.SZ": 70    # 德赛西威
+        },
+        "半导体": {
+            "688981.SH": 95,   # 中芯国际 - 龙头
+            "002371.SZ": 85,   # 北方华创
+            "603986.SH": 75,   # 兆易创新
+            "300782.SZ": 70    # 卓胜微
+        },
+        "算力": {
+            "000977.SZ": 95,   # 浪潮信息 - 龙头
+            "603019.SH": 85,   # 中科曙光
+            "300442.SZ": 75,   # 普丽盛
+            "002281.SZ": 70    # 光迅科技
+        },
+        "机器人": {
+            "300124.SZ": 95,   # 汇川技术 - 龙头
+            "300024.SZ": 85,   # 机器人
+            "002747.SZ": 80,   # 埃斯顿
+            "688017.SH": 75,   # 绿的谐波
+            "300161.SZ": 70    # 华中数控
+        }
+    }
+    
+    # 如果板块在预设中
+    if sector_code in preset_ranks:
+        stock_ranks = preset_ranks[sector_code]
+        if stock_code in stock_ranks:
+            score = stock_ranks[stock_code]
+            print(f"👑 股票 {stock_code} 在板块 {sector_code} 中龙头得分: {score}")
+            return float(score)
         else:
-            rank_score = 50
-        
-        return round(rank_score, 2)
-        
-    except Exception as e:
-        print(f"计算龙头识别得分失败 {stock_code}: {e}")
-        return 50.0
+            # 板块内有但不在预设列表，给中等分
+            print(f"⚠️ 股票 {stock_code} 在板块 {sector_code} 中但无预设排名，返回60")
+            return 60.0
+    
+    # 默认返回50分
+    print(f"⚠️ 未找到板块 {sector_code} 的龙头排名预设，返回默认值50")
+    return 50.0
 
 def calculate_trend_score(df: pd.DataFrame) -> float:
     """
