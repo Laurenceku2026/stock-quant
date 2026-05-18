@@ -803,19 +803,11 @@ def get_sector_members_fallback(sector_name: str, limit: int = 10) -> List[Dict]
 #==============
 def sync_sector_members_to_cache() -> Tuple[bool, str]:
     """
-    同步所有板块的成分股到缓存（按涨跌幅排名）
-    建议：每日手动执行一次，或配置定时任务
+    同步预置板块的成分股到缓存（只同步 HOT_SECTORS 中的板块）
+    快速稳定，不超时
     """
-    if not TUSHARE_AVAILABLE:
-        return False, "Tushare不可用"
-    
     try:
-        print("🔄 开始同步板块成分股到缓存...")
-        
-        # 1. 获取所有概念板块
-        concept_df = TUSHARE_PRO.concept()
-        if concept_df is None or concept_df.empty:
-            return False, "获取概念板块失败"
+        print("🔄 开始同步预置板块成分股到缓存...")
         
         headers = get_supabase_headers(use_secret=True)
         url = f"{SUPABASE_URL}/rest/v1/sector_members_cache"
@@ -824,65 +816,28 @@ def sync_sector_members_to_cache() -> Tuple[bool, str]:
         requests.delete(url, headers=headers)
         
         member_count = 0
-        sector_count = 0
         
-        for _, row in concept_df.iterrows():
-            sector_name = row.get('name', '')
-            sector_code = row.get('code', '')
+        for sector_name, sector_info in HOT_SECTORS.items():
+            stocks = sector_info.get("stocks", [])
+            names = sector_info.get("names", [])
             
-            if not sector_name:
-                continue
+            # 直接使用预置数据，不调用 Tushare API
+            for rank, (code, name) in enumerate(zip(stocks, names)):
+                data = {
+                    "sector_name": sector_name,
+                    "stock_code": code,
+                    "stock_name": name,
+                    "rank": rank + 1,
+                    "updated_at": datetime.now().isoformat()
+                }
+                resp = requests.post(url, headers=headers, json=data)
+                if resp.status_code in [200, 201]:
+                    member_count += 1
             
-            try:
-                # 获取板块成分股
-                member_df = TUSHARE_PRO.concept_member(concept_code=sector_code)
-                if member_df is not None and not member_df.empty:
-                    members = []
-                    for _, m_row in member_df.iterrows():
-                        stock_code = m_row.get('ts_code', '')
-                        stock_name = m_row.get('name', '')
-                        if stock_code:
-                            members.append({
-                                "stock_code": stock_code,
-                                "stock_name": stock_name
-                            })
-                    
-                    # 获取个股涨跌幅用于排名（取最近5日涨幅）
-                    for m in members[:20]:  # 每个板块取前20只计算涨跌幅
-                        try:
-                            df = get_stock_daily(m['stock_code'], days=5)
-                            if not df.empty and len(df) >= 2:
-                                pct_chg = (df['close'].iloc[-1] - df['close'].iloc[-2]) / df['close'].iloc[-2] * 100
-                                m['pct_chg'] = pct_chg
-                            else:
-                                m['pct_chg'] = 0
-                        except:
-                            m['pct_chg'] = 0
-                    
-                    # 按涨跌幅排序
-                    members.sort(key=lambda x: x.get('pct_chg', 0), reverse=True)
-                    
-                    # 插入数据库（每个板块只存前10只）
-                    for rank, m in enumerate(members[:10]):
-                        data = {
-                            "sector_name": sector_name,
-                            "stock_code": m['stock_code'],
-                            "stock_name": m['stock_name'],
-                            "rank": rank + 1,
-                            "updated_at": datetime.now().isoformat()
-                        }
-                        resp = requests.post(url, headers=headers, json=data)
-                        if resp.status_code in [200, 201]:
-                            member_count += 1
-                    
-                    sector_count += 1
-                    print(f"✅ 板块 {sector_name}: {len(members[:10])} 只股票已缓存")
-                    
-            except Exception as e:
-                print(f"⚠️ 处理板块 {sector_name} 失败: {e}")
+            print(f"✅ 板块 {sector_name}: {len(stocks)} 只股票已缓存")
         
-        print(f"✅ 同步完成: {sector_count} 个板块, {member_count} 个成分股")
-        return True, f"同步成功: {sector_count} 个板块, {member_count} 个成分股"
+        print(f"✅ 同步完成: {len(HOT_SECTORS)} 个板块, {member_count} 个成分股")
+        return True, f"同步成功: {len(HOT_SECTORS)} 个板块, {member_count} 个成分股"
         
     except Exception as e:
         print(f"同步成分股失败: {e}")
