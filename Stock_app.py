@@ -913,6 +913,8 @@ def get_concept_stocks_tushare(concept_name: str) -> List[Dict]:
 
 
 def get_hot_concepts_tushare(limit: int = 10) -> List[Dict]:
+    st.write("🔥 DEBUG: get_hot_concepts_tushare 被调用")
+    print("🔥 DEBUG: get_hot_concepts_tushare 被调用")
     """获取热门概念板块列表（使用 Tushare）"""
     if not TUSHARE_AVAILABLE:
         return []
@@ -1635,6 +1637,9 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
     自动推荐Top10股票
     使用 Tushare 获取板块列表，使用 AkShare 获取板块成分股
     """
+    st.write("🔍 DEBUG: auto_recommend_top10 函数开始执行")
+    print("🔍 DEBUG: auto_recommend_top10 函数开始执行")
+    
     if not TUSHARE_AVAILABLE:
         st.error("❌ Tushare不可用")
         return []
