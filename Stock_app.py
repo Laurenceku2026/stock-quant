@@ -3168,55 +3168,91 @@ def render_market_brief():
         st.rerun()
     
     with st.spinner("正在获取市场数据..."):
-        # ===== 上证指数技术指标（新增） =====
+        # ===== 上证指数技术指标 =====
         st.markdown("**📈 大盘技术分析（上证指数）**")
         
         try:
-            index_indicators = get_index_technical_indicators("000001.SH")
+            # 获取上证指数数据
+            index_code = "000001.SH"
+            df_index = get_stock_daily(index_code, days=120)
             
-            # 安全检查：确保 index_indicators 是字典且包含必要的键
-            if isinstance(index_indicators, dict):
-                # 显示技术指标卡片
+            if not df_index.empty:
+                # 手动计算各项指标（避免依赖复杂的嵌套字典）
+                macd_result = calculate_macd(df_index)
+                kdj_result = calculate_kdj(df_index)
+                boll_result = calculate_bollinger_bands(df_index)
+                rsi_result = calculate_rsi(df_index)
+                
+                # 计算综合趋势得分
+                trend_score = (
+                    macd_result.get("score", 50) * 0.30 +
+                    kdj_result.get("score", 50) * 0.25 +
+                    boll_result.get("score", 50) * 0.20 +
+                    rsi_result.get("score", 50) * 0.25
+                )
+                
+                # 判断趋势
+                if trend_score >= 70:
+                    trend_text = "多头趋势 ↑"
+                elif trend_score >= 55:
+                    trend_text = "震荡偏多 ↗"
+                elif trend_score >= 40:
+                    trend_text = "震荡偏空 ↘"
+                else:
+                    trend_text = "空头趋势 ↓"
+                
+                # 生成总结
+                signal_list = []
+                if macd_result.get("signal_level") in ["golden_cross", "bullish"]:
+                    signal_list.append("MACD偏多")
+                elif macd_result.get("signal_level") in ["death_cross", "bearish"]:
+                    signal_list.append("MACD偏空")
+                
+                if kdj_result.get("signal_level") in ["oversold_golden", "bullish"]:
+                    signal_list.append("KDJ金叉")
+                elif kdj_result.get("signal_level") in ["overbought_death", "bearish"]:
+                    signal_list.append("KDJ死叉")
+                
+                rsi_val = rsi_result.get("rsi", 50)
+                if rsi_val > 70:
+                    signal_list.append("RSI超买")
+                elif rsi_val < 30:
+                    signal_list.append("RSI超卖")
+                
+                summary = f"{trend_text} | " + (" | ".join(signal_list) if signal_list else "指标中性")
+                
+                # 显示5个指标卡片
                 col1, col2, col3, col4, col5 = st.columns(5)
+                
                 with col1:
-                    trend_text = index_indicators.get("trend", "数据不可用")
-                    trend_score = index_indicators.get("trend_score", 50)
                     st.metric("趋势判断", trend_text, delta=f"得分 {trend_score:.0f}")
                 
                 with col2:
-                    macd_data = index_indicators.get("macd", {})
-                    macd_signal = macd_data.get("signal_level", "neutral")
-                    macd_score = macd_data.get("score", 50)
-                    macd_status = "金叉" if macd_signal == "golden_cross" else \
-                                  "死叉" if macd_signal == "death_cross" else \
-                                  "多头" if macd_signal == "bullish" else \
-                                  "空头" if macd_signal == "bearish" else "中性"
-                    st.metric("MACD", macd_status, delta=f"{macd_score:.0f}分")
+                    macd_status = "金叉" if macd_result.get("signal_level") == "golden_cross" else \
+                                  "死叉" if macd_result.get("signal_level") == "death_cross" else \
+                                  "多头" if macd_result.get("signal_level") == "bullish" else \
+                                  "空头" if macd_result.get("signal_level") == "bearish" else "中性"
+                    st.metric("MACD", macd_status, delta=f"{macd_result.get('score', 50):.0f}分")
                 
                 with col3:
-                    kdj_data = index_indicators.get("kdj", {})
-                    k_val = kdj_data.get("k", 50) if isinstance(kdj_data, dict) else 50
-                    d_val = kdj_data.get("d", 50) if isinstance(kdj_data, dict) else 50
-                    kdj_score = kdj_data.get("score", 50) if isinstance(kdj_data, dict) else 50
+                    k_val = kdj_result.get("k", 50)
+                    d_val = kdj_result.get("d", 50)
                     kdj_status = f"K:{k_val:.0f}/D:{d_val:.0f}"
-                    st.metric("KDJ", kdj_status, delta=f"{kdj_score:.0f}分")                
+                    st.metric("KDJ", kdj_status, delta=f"{kdj_result.get('score', 50):.0f}分")
+                
                 with col4:
-                    rsi_data = index_indicators.get("rsi", {})
-                    rsi_val = rsi_data.get("rsi", 50) if isinstance(rsi_data, dict) else 50
-                    rsi_delta = "超买" if rsi_val > 70 else "超卖" if rsi_val < 30 else "正常"
-                    st.metric("RSI", f"{rsi_val:.0f}", delta=rsi_delta)
+                    st.metric("RSI", f"{rsi_val:.0f}", 
+                             delta="超买" if rsi_val > 70 else "超卖" if rsi_val < 30 else "正常")
                 
                 with col5:
-                    boll_data = index_indicators.get("boll", {})
-                    boll_pos = boll_data.get("position", 0.5) if isinstance(boll_data, dict) else 0.5
-                    boll_score = boll_data.get("score", 50) if isinstance(boll_data, dict) else 50
+                    boll_pos = boll_result.get("position", 0.5)
                     boll_status = "上轨" if boll_pos > 0.7 else "下轨" if boll_pos < 0.3 else "中轨"
-                    st.metric("布林带", boll_status, delta=f"{boll_score:.0f}分")
+                    st.metric("布林带", boll_status, delta=f"{boll_result.get('score', 50):.0f}分")
                 
-                summary = index_indicators.get("summary", "数据获取中")
                 st.caption(f"📝 {summary}")
             else:
-                st.warning("无法获取大盘技术指标")
+                st.warning("无法获取上证指数数据")
+                
         except Exception as e:
             st.warning(f"获取大盘指标时出错: {str(e)}")
         
