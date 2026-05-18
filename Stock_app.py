@@ -2608,6 +2608,7 @@ def calculate_technical_score(df: pd.DataFrame, tech_weights: Dict = None) -> Di
 # ==================== 完整评分引擎（板块热度 + 龙头识别 + 技术指标 + 长短期趋势） ====================
 
 def calculate_sector_heat_score(sector_code: str = None, sector_name: str = None) -> float:
+    print(f"🔥 calculate_sector_heat_score 被调用，参数: sector_code={sector_code}, sector_name={sector_name}")
     """
     计算板块热度得分（使用 Tushare concept_daily）
     权重：占综合评分的 40%
