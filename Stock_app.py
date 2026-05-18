@@ -465,6 +465,7 @@ def sync_stock_basic_to_db():
         return False, 0, "Tushare不可用，请检查配置"
     
     try:
+        # 获取股票列表（包含名称）
         df = TUSHARE_PRO.stock_basic(exchange='', list_status='L', fields='ts_code,name')
         
         if df is None or df.empty:
@@ -485,8 +486,10 @@ def sync_stock_basic_to_db():
         }
         url = f"{SUPABASE_URL}/rest/v1/stock_basic_cache"
         
+        # 先清空旧数据
         requests.delete(url, headers=headers)
         
+        # 批量插入新数据
         inserted = 0
         for record in records:
             response = requests.post(url, headers=headers, json=record)
@@ -705,7 +708,7 @@ def init_gm():
 
 @st.cache_data(ttl=7200)
 def get_cached_sector_performance():
-    """缓存板块表现数据"""
+    """缓存板块表现数据（领涨股显示名称）"""
     # 先从缓存表获取板块列表
     sectors = load_sector_cache()
     
@@ -716,7 +719,7 @@ def get_cached_sector_performance():
             data.append({
                 "板块": sector_name,
                 "涨跌幅": 0,
-                "领涨股": sector_info["names"][0]
+                "领涨股": sector_info["names"][0] if sector_info["names"] else ""
             })
         return pd.DataFrame(data)
     
@@ -735,6 +738,7 @@ def get_cached_sector_performance():
         
         try:
             performances = []
+            leader_code = ""
             leader_name = ""
             leader_change = -100
             
@@ -748,6 +752,8 @@ def get_cached_sector_performance():
                     
                     if change_pct > leader_change:
                         leader_change = change_pct
+                        leader_code = ts_code
+                        # 获取股票名称
                         leader_name = get_stock_name_from_tushare(ts_code)
             
             if performances:
@@ -758,7 +764,7 @@ def get_cached_sector_performance():
             data.append({
                 "板块": sector_name,
                 "涨跌幅": round(avg_change, 2),
-                "领涨股": leader_name
+                "领涨股": leader_name if leader_name else leader_code  # 优先显示名称
             })
         except Exception as e:
             data.append({
@@ -1799,7 +1805,7 @@ print("=" * 60)
 # ==================== Tushare 数据获取 ====================
 
 def get_stock_daily(ts_code: str, days: int = 120) -> pd.DataFrame:
-    """获取股票日线数据"""
+    """获取股票或指数日线数据（自动识别）"""
     if not TUSHARE_AVAILABLE or TUSHARE_PRO is None:
         return pd.DataFrame()
     
@@ -1807,8 +1813,18 @@ def get_stock_daily(ts_code: str, days: int = 120) -> pd.DataFrame:
         end_date = datetime.now().strftime("%Y%m%d")
         start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
         
-       
-        df = TUSHARE_PRO.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+        # 判断是否为指数代码
+        is_index = False
+        index_code_map = {
+            "000001.SH": "000001.SH",  # 上证指数
+        }
+        
+        if ts_code in index_code_map:
+            is_index = True
+            real_code = index_code_map[ts_code]
+            df = TUSHARE_PRO.index_daily(code=real_code, start_date=start_date, end_date=end_date)
+        else:
+            df = TUSHARE_PRO.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
         
         if df is not None and len(df) > 0:
             df = df.sort_values('trade_date')
@@ -1819,8 +1835,8 @@ def get_stock_daily(ts_code: str, days: int = 120) -> pd.DataFrame:
             return df
         return pd.DataFrame()
     except Exception as e:
+        print(f"获取数据失败 {ts_code}: {e}")
         return pd.DataFrame()
-
 
 def get_stock_name_from_tushare(ts_code: str) -> str:
     """从Tushare获取股票名称"""
