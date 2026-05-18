@@ -361,7 +361,17 @@ def init_session_state():
         st.session_state.stock_cache_loaded = False
     if "sector_cache_loaded" not in st.session_state:
         st.session_state.sector_cache_loaded = False
-
+    # 新增：板块管理页面状态
+    if "show_sector_management" not in st.session_state:
+        st.session_state.show_sector_management = False
+    # 新增：编辑实操池状态
+    if "edit_live_stock" not in st.session_state:
+        st.session_state.edit_live_stock = None
+    # 新增：创建板块临时状态
+    if "show_add_stocks_to_sector" not in st.session_state:
+        st.session_state.show_add_stocks_to_sector = False
+    if "new_sector_name" not in st.session_state:
+        st.session_state.new_sector_name = ""
 
 # ==================== 工具函数 ====================
 def get_current_time_str() -> str:
