@@ -1814,30 +1814,35 @@ def get_stock_daily(ts_code: str, days: int = 120) -> pd.DataFrame:
         start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
         
         # 判断是否为指数代码
-        is_index = False
         index_code_map = {
             "000001.SH": "000001.SH",  # 上证指数
         }
         
         if ts_code in index_code_map:
-            is_index = True
+            # 获取指数数据
             real_code = index_code_map[ts_code]
             df = TUSHARE_PRO.index_daily(code=real_code, start_date=start_date, end_date=end_date)
+            if df is not None and len(df) > 0:
+                df = df.sort_values('trade_date')
+                df = df.rename(columns={'trade_date': 'date'})
+                # 指数没有成交量，添加一个默认列
+                df['volume'] = 0
+                return df
         else:
+            # 获取股票数据
             df = TUSHARE_PRO.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+            if df is not None and len(df) > 0:
+                df = df.sort_values('trade_date')
+                df = df.rename(columns={
+                    'trade_date': 'date',
+                    'vol': 'volume'
+                })
+                return df
         
-        if df is not None and len(df) > 0:
-            df = df.sort_values('trade_date')
-            df = df.rename(columns={
-                'trade_date': 'date',
-                'vol': 'volume'
-            })
-            return df
         return pd.DataFrame()
     except Exception as e:
         print(f"获取数据失败 {ts_code}: {e}")
         return pd.DataFrame()
-
 def get_stock_name_from_tushare(ts_code: str) -> str:
     """从Tushare获取股票名称"""
     global STOCK_NAME_CACHE
