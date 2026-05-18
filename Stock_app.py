@@ -1658,7 +1658,7 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
                 stock_name = member['name']
                 
                 # 计算综合评分
-                score_result = get_stock_score(stock["code"], stock["name"], sector_name=stock["sector"])
+                score_result = get_stock_score(ts_code, stock_name, sector_name=concept_name)
                 
                 all_scored_stocks.append({
                     "code": ts_code,
@@ -1686,7 +1686,7 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
                     ts_code = member['code']
                     stock_name = member['name']
                     
-                    score_result = get_stock_score(stock["code"], stock["name"], sector_name=stock["sector"])
+                    score_result = get_stock_score(ts_code, stock_name, sector_name=concept_name)
                     
                     all_scored_stocks.append({
                         "code": ts_code,
@@ -1757,7 +1757,7 @@ def auto_recommend_top10_fallback(user_id: str, access_token: str = None) -> Lis
     # 评分
     scored_stocks = []
     for stock in unique_stocks:  # 确保这个循环能执行
-        score_result = get_stock_score(stock["code"], stock["name"], sector_name=stock["sector"])
+        score_result = get_stock_score(ts_code, stock_name, sector_name=concept_name)
         scored_stocks.append({
             "code": stock["code"],
             "name": stock["name"],
