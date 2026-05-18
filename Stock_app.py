@@ -4809,6 +4809,22 @@ def render_sidebar():
     with st.sidebar:
         st.markdown("## 📊 AI量化股票系统")
         st.markdown("---")
+ # 连接状态显示（新增）
+        st.markdown("**🔌 连接状态**")
+        col_status1, col_status2 = st.columns(2)
+        with col_status1:
+            if TUSHARE_AVAILABLE:
+                st.markdown("✅ Tushare")
+            else:
+                st.markdown("❌ Tushare")
+        with col_status2:
+            if GM_AVAILABLE:
+                st.markdown("✅ 掘金")
+            else:
+                st.markdown("❌ 掘金")
+        
+        st.markdown("---")
+
         
         if st.session_state.authenticated and not st.session_state.admin_mode:
             user_email = st.session_state.user_email
