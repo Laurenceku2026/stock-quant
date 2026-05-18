@@ -2800,41 +2800,41 @@ def calculate_sector_heat_score(sector_code: str = None, sector_name: str = None
     except Exception as e:
         print(f"计算板块热度得分失败: {e}")
         return 50.0
+#------------------
 
-    def calculate_leader_score(stock_code: str, sector_code: str = None) -> float:
-    """
-    计算龙头识别得分
-    权重：占综合评分的 30%
-    从数据库缓存动态读取（每日更新）
-    """
-    print(f"👑 calculate_leader_score 被调用，参数: stock_code={stock_code}, sector_code={sector_code}")
+def calculate_leader_score(stock_code: str, sector_code: str = None) -> float:
+"""
+计算龙头识别得分
+权重：占综合评分的 30%
+从数据库缓存动态读取（每日更新）
+"""
+print(f"👑 calculate_leader_score 被调用，参数: stock_code={stock_code}, sector_code={sector_code}")
+
+if not sector_code:
+    return 50.0
+
+try:
+    # 1. 从缓存读取板块成分股（sector_code 实际是板块名称）
+    members = get_sector_members_from_cache(sector_code, limit=50)
     
-    if not sector_code:
+    if members:
+        # 查找股票排名
+        for idx, member in enumerate(members):
+            if member.get('stock_code') == stock_code:
+                rank = idx + 1
+                score = 100 * (1 - rank / len(members))
+                print(f"👑 股票 {stock_code} 在板块 {sector_code} 中排名 {rank}/{len(members)}，得分: {score:.2f}")
+                return round(score, 2)
+        print(f"⚠️ 股票 {stock_code} 不在板块 {sector_code} 的缓存中")
         return 50.0
-    
-    try:
-        # 1. 从缓存读取板块成分股（sector_code 实际是板块名称）
-        members = get_sector_members_from_cache(sector_code, limit=50)
+    else:
+        # 2. 缓存为空，使用预置数据降级
+        print(f"⚠️ 缓存为空，使用预置数据降级")
+        return get_leader_score_fallback(stock_code, sector_code)
         
-        if members:
-            # 查找股票排名
-            for idx, member in enumerate(members):
-                if member.get('stock_code') == stock_code:
-                    rank = idx + 1
-                    score = 100 * (1 - rank / len(members))
-                    print(f"👑 股票 {stock_code} 在板块 {sector_code} 中排名 {rank}/{len(members)}，得分: {score:.2f}")
-                    return round(score, 2)
-            print(f"⚠️ 股票 {stock_code} 不在板块 {sector_code} 的缓存中")
-            return 50.0
-        else:
-            # 2. 缓存为空，使用预置数据降级
-            print(f"⚠️ 缓存为空，使用预置数据降级")
-            return get_leader_score_fallback(stock_code, sector_code)
-            
-    except Exception as e:
-        print(f"❌ 计算龙头识别得分失败: {e}")
-        return 50.0
-
+except Exception as e:
+    print(f"❌ 计算龙头识别得分失败: {e}")
+    return 50.0
 
 def get_leader_score_fallback(stock_code: str, sector_name: str) -> float:
     """降级方案：从 HOT_SECTORS 预置数据读取"""
