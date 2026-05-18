@@ -42,6 +42,29 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+import time
+from functools import wraps
+
+def tushare_request_with_retry(func):
+    """一个装饰器，让所有调用Tushare的函数都自带延时、重试和错误处理"""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                time.sleep(0.5) # 每次请求前暂停0.5秒，这是关键
+                result = func(*args, **kwargs)
+                if result is not None and not (hasattr(result, 'empty') and result.empty):
+                    return result
+                else:
+                    print(f"Tushare请求返回空数据，尝试 {attempt+1}/{max_retries}")
+                    time.sleep(1) # 失败后等待1秒再重试
+            except Exception as e:
+                print(f"Tushare请求错误 (尝试 {attempt+1}/{max_retries}): {e}")
+                time.sleep(2) # 出错后等待2秒
+        return None # 所有重试都失败后返回None
+    return wrapper
+
 # ==================== 时区配置 ====================
 from datetime import timezone
 
@@ -546,11 +569,66 @@ def init_stock_cache_on_startup():
 
 
 def get_stock_name_from_tushare(ts_code: str) -> str:
-    """根据股票代码获取名称"""
+    """根据股票代码获取名称（支持按需缓存）"""
     global STOCK_NAME_CACHE
-    if not STOCK_NAME_CACHE:
-        load_stock_name_cache()
-    return STOCK_NAME_CACHE.get(ts_code, ts_code.split('.')[0])
+
+    # 1. 先从内存缓存里找（最快）
+    if STOCK_NAME_CACHE and ts_code in STOCK_NAME_CACHE:
+        return STOCK_NAME_CACHE[ts_code]
+
+    # 2. 内存里没有，就去数据库里找
+    try:
+        headers = {
+            "apikey": SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
+            "Content-Type": "application/json"
+        }
+        url = f"{SUPABASE_URL}/rest/v1/stock_basic_cache?ts_code=eq.{ts_code}&select=name"
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code == 200 and response.json():
+            name = response.json()[0]['name']
+            STOCK_NAME_CACHE[ts_code] = name
+            return name
+    except Exception as e:
+        print(f"从数据库读取缓存失败: {e}")
+
+    # 3. 如果哪里都没有，就去Tushare查询这一只股票的信息
+    if not TUSHARE_AVAILABLE:
+        return ts_code.split('.')[0]
+
+    try:
+        df = TUSHARE_PRO.stock_basic(ts_code=ts_code, fields='ts_code,name')
+        if df is not None and not df.empty:
+            stock_name = df.iloc[0]['name']
+            _save_stock_name_to_db(ts_code, stock_name)
+            STOCK_NAME_CACHE[ts_code] = stock_name
+            return stock_name
+        else:
+            return ts_code.split('.')[0]
+    except Exception as e:
+        print(f"从Tushare查询股票名称失败 {ts_code}: {e}")
+        return ts_code.split('.')[0]
+
+def _save_stock_name_to_db(ts_code: str, name: str):
+    """内部函数：将查询到的股票名称存入数据库"""
+    try:
+        headers = {
+            "apikey": SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "ts_code": ts_code,
+            "name": name,
+            "updated_at": datetime.now().isoformat()
+        }
+        url = f"{SUPABASE_URL}/rest/v1/stock_basic_cache"
+        response = requests.post(url, headers=headers, json=data)
+        if response.status_code not in [200, 201]:
+            print(f"保存股票名称失败: {response.text}")
+    except Exception as e:
+        print(f"保存股票名称到数据库失败: {e}")
 
 
 # ==================== 板块缓存（从Supabase读取 + Tushare同步） ====================
@@ -1804,7 +1882,7 @@ print("=" * 60)
 # ============================================================
 
 # ==================== Tushare 数据获取 ====================
-
+@tushare_request_with_retry
 def get_stock_daily(ts_code: str, days: int = 120) -> pd.DataFrame:
     """获取股票或指数日线数据（自动识别）"""
     if not TUSHARE_AVAILABLE or TUSHARE_PRO is None:
@@ -1844,13 +1922,6 @@ def get_stock_daily(ts_code: str, days: int = 120) -> pd.DataFrame:
     except Exception as e:
         print(f"获取数据失败 {ts_code}: {e}")
         return pd.DataFrame()
-def get_stock_name_from_tushare(ts_code: str) -> str:
-    """从Tushare获取股票名称"""
-    global STOCK_NAME_CACHE
-    if not STOCK_NAME_CACHE:
-        load_stock_name_cache()
-    return STOCK_NAME_CACHE.get(ts_code, ts_code.split('.')[0])
-
 
 def get_sector_performance() -> pd.DataFrame:
     """
