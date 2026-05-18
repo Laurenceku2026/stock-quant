@@ -5397,7 +5397,7 @@ def render_sidebar():
         col_status1, col_status2 = st.columns(2)
         with col_status1:
             if TUSHARE_AVAILABLE:
-                 st.write("DEBUG: Tushare 可用")
+                st.write("DEBUG: Tushare 可用")
                 st.markdown("✅ Tushare")
             else:
                 st.write("DEBUG: Tushare 不可用")
