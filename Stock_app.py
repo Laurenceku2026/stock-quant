@@ -811,10 +811,7 @@ def get_sector_members_fallback(sector_name: str, limit: int = 10) -> List[Dict]
     return []
 #==============
 def sync_sector_members_to_cache() -> Tuple[bool, str]:
-    """
-    同步预置板块的成分股到缓存（只同步 HOT_SECTORS 中的板块）
-    快速稳定，不超时
-    """
+    """同步预置板块到 sector_members_cache 表（一行一只股票）"""
     try:
         print("🔄 开始同步预置板块成分股到缓存...")
         
@@ -830,7 +827,6 @@ def sync_sector_members_to_cache() -> Tuple[bool, str]:
             stocks = sector_info.get("stocks", [])
             names = sector_info.get("names", [])
             
-            # 直接使用预置数据，不调用 Tushare API
             for rank, (code, name) in enumerate(zip(stocks, names)):
                 data = {
                     "sector_name": sector_name,
@@ -845,11 +841,10 @@ def sync_sector_members_to_cache() -> Tuple[bool, str]:
             
             print(f"✅ 板块 {sector_name}: {len(stocks)} 只股票已缓存")
         
-        print(f"✅ 同步完成: {len(HOT_SECTORS)} 个板块, {member_count} 个成分股")
         return True, f"同步成功: {len(HOT_SECTORS)} 个板块, {member_count} 个成分股"
         
     except Exception as e:
-        print(f"同步成分股失败: {e}")
+        print(f"同步失败: {e}")
         return False, f"同步失败: {str(e)}"
 
 # ==================== 掘金初始化 ====================
