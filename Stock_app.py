@@ -1733,12 +1733,18 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
 
 
 def auto_recommend_top10_fallback(user_id: str, access_token: str = None) -> List[Dict]:
+    st.write("🔍 DEBUG: 进入 fallback 函数")
+    st.write(f"HOT_SECTORS 内容: {list(HOT_SECTORS.keys())}")   
     """降级方案：使用预置板块"""
     all_stocks = []
     for sector_name, sector_info in HOT_SECTORS.items():
         for i, ts_code in enumerate(sector_info["stocks"]):
             stock_name = sector_info["names"][i] if i < len(sector_info["names"]) else ts_code
-            all_stocks.append({"code": ts_code, "name": stock_name, "sector": sector_name})
+            all_stocks.append({
+                "code": ts_code, 
+                "name": stock_name, 
+                "sector": sector_name
+            })
     
     # 去重
     seen = set()
@@ -1750,8 +1756,8 @@ def auto_recommend_top10_fallback(user_id: str, access_token: str = None) -> Lis
     
     # 评分
     scored_stocks = []
-    for stock in unique_stocks:
-        score_result = get_stock_score(stock["code"], stock["name"])
+    for stock in unique_stocks:  # 确保这个循环能执行
+        score_result = get_stock_score(stock["code"], stock["name"], sector_name=stock["sector"])
         scored_stocks.append({
             "code": stock["code"],
             "name": stock["name"],
