@@ -5325,16 +5325,16 @@ def render_admin_panel():
                     st.error("❌ 同步失败，请检查Tushare连接")
     
     with col2:
-        if st.button("🔄 同步热点板块", key="sync_hot_sectors", use_container_width=True):
-            with st.spinner("正在同步热点板块..."):
-                success, msg = sync_hot_sectors_to_db()
-                if success:
-                    st.success(msg)
+        if st.button("🔄 同步预置板块到缓存", key="sync_default_sectors", use_container_width=True):
+            with st.spinner("正在同步预置板块..."):
+                # 直接使用预置板块，不调用 Tushare
+                try:
+                    save_default_sectors_to_cache()
+                    st.success("✅ 预置板块已同步到缓存")
                     st.session_state.sector_cache_loaded = False
                     st.rerun()
-                else:
-                    st.error(msg)
-    
+                except Exception as e:
+                    st.error(f"同步失败: {e}")    
     st.markdown("---")
     
     if st.button("退出管理员模式", use_container_width=True):
