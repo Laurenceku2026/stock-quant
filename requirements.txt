@@ -6,3 +6,4 @@ requests>=2.31.0
 tushare>=1.2.0
 stripe>=7.0.0
 st-paywall>=0.1.5
+gm>=3.0.0
