@@ -800,6 +800,93 @@ def get_sector_members_fallback(sector_name: str, limit: int = 10) -> List[Dict]
             })
         return members
     return []
+#==============
+def sync_sector_members_to_cache() -> Tuple[bool, str]:
+    """
+    同步所有板块的成分股到缓存（按涨跌幅排名）
+    建议：每日手动执行一次，或配置定时任务
+    """
+    if not TUSHARE_AVAILABLE:
+        return False, "Tushare不可用"
+    
+    try:
+        print("🔄 开始同步板块成分股到缓存...")
+        
+        # 1. 获取所有概念板块
+        concept_df = TUSHARE_PRO.concept()
+        if concept_df is None or concept_df.empty:
+            return False, "获取概念板块失败"
+        
+        headers = get_supabase_headers(use_secret=True)
+        url = f"{SUPABASE_URL}/rest/v1/sector_members_cache"
+        
+        # 清空旧数据
+        requests.delete(url, headers=headers)
+        
+        member_count = 0
+        sector_count = 0
+        
+        for _, row in concept_df.iterrows():
+            sector_name = row.get('name', '')
+            sector_code = row.get('code', '')
+            
+            if not sector_name:
+                continue
+            
+            try:
+                # 获取板块成分股
+                member_df = TUSHARE_PRO.concept_member(concept_code=sector_code)
+                if member_df is not None and not member_df.empty:
+                    members = []
+                    for _, m_row in member_df.iterrows():
+                        stock_code = m_row.get('ts_code', '')
+                        stock_name = m_row.get('name', '')
+                        if stock_code:
+                            members.append({
+                                "stock_code": stock_code,
+                                "stock_name": stock_name
+                            })
+                    
+                    # 获取个股涨跌幅用于排名（取最近5日涨幅）
+                    for m in members[:20]:  # 每个板块取前20只计算涨跌幅
+                        try:
+                            df = get_stock_daily(m['stock_code'], days=5)
+                            if not df.empty and len(df) >= 2:
+                                pct_chg = (df['close'].iloc[-1] - df['close'].iloc[-2]) / df['close'].iloc[-2] * 100
+                                m['pct_chg'] = pct_chg
+                            else:
+                                m['pct_chg'] = 0
+                        except:
+                            m['pct_chg'] = 0
+                    
+                    # 按涨跌幅排序
+                    members.sort(key=lambda x: x.get('pct_chg', 0), reverse=True)
+                    
+                    # 插入数据库（每个板块只存前10只）
+                    for rank, m in enumerate(members[:10]):
+                        data = {
+                            "sector_name": sector_name,
+                            "stock_code": m['stock_code'],
+                            "stock_name": m['stock_name'],
+                            "rank": rank + 1,
+                            "updated_at": datetime.now().isoformat()
+                        }
+                        resp = requests.post(url, headers=headers, json=data)
+                        if resp.status_code in [200, 201]:
+                            member_count += 1
+                    
+                    sector_count += 1
+                    print(f"✅ 板块 {sector_name}: {len(members[:10])} 只股票已缓存")
+                    
+            except Exception as e:
+                print(f"⚠️ 处理板块 {sector_name} 失败: {e}")
+        
+        print(f"✅ 同步完成: {sector_count} 个板块, {member_count} 个成分股")
+        return True, f"同步成功: {sector_count} 个板块, {member_count} 个成分股"
+        
+    except Exception as e:
+        print(f"同步成分股失败: {e}")
+        return False, f"同步失败: {str(e)}"
 
 # ==================== 掘金初始化 ====================
 def init_gm():
@@ -2714,67 +2801,52 @@ def calculate_sector_heat_score(sector_code: str = None, sector_name: str = None
         print(f"计算板块热度得分失败: {e}")
         return 50.0
 
-def calculate_leader_score(stock_code: str, sector_code: str = None) -> float:
+    def calculate_leader_score(stock_code: str, sector_code: str = None) -> float:
     """
     计算龙头识别得分
     权重：占综合评分的 30%
-    使用预置板块个股排名（快速稳定）
+    从数据库缓存动态读取（每日更新）
     """
     print(f"👑 calculate_leader_score 被调用，参数: stock_code={stock_code}, sector_code={sector_code}")
     
     if not sector_code:
         return 50.0
     
-    # 预置板块个股龙头得分（sector_code 实际是板块名称）
-    preset_ranks = {
-        "光模块/CPO": {
-            "300308.SZ": 95,   # 中际旭创 - 绝对龙头
-            "300394.SZ": 85,   # 天孚通信
-            "300502.SZ": 80,   # 新易盛
-            "688313.SH": 70,   # 仕佳光子
-            "301191.SZ": 65    # 中瓷电子
-        },
-        "人工智能": {
-            "002230.SZ": 95,   # 科大讯飞 - 龙头
-            "002415.SZ": 85,   # 海康威视
-            "300058.SZ": 75,   # 蓝色光标
-            "002920.SZ": 70    # 德赛西威
-        },
-        "半导体": {
-            "688981.SH": 95,   # 中芯国际 - 龙头
-            "002371.SZ": 85,   # 北方华创
-            "603986.SH": 75,   # 兆易创新
-            "300782.SZ": 70    # 卓胜微
-        },
-        "算力": {
-            "000977.SZ": 95,   # 浪潮信息 - 龙头
-            "603019.SH": 85,   # 中科曙光
-            "300442.SZ": 75,   # 普丽盛
-            "002281.SZ": 70    # 光迅科技
-        },
-        "机器人": {
-            "300124.SZ": 95,   # 汇川技术 - 龙头
-            "300024.SZ": 85,   # 机器人
-            "002747.SZ": 80,   # 埃斯顿
-            "688017.SH": 75,   # 绿的谐波
-            "300161.SZ": 70    # 华中数控
-        }
-    }
-    
-    # 如果板块在预设中
-    if sector_code in preset_ranks:
-        stock_ranks = preset_ranks[sector_code]
-        if stock_code in stock_ranks:
-            score = stock_ranks[stock_code]
-            print(f"👑 股票 {stock_code} 在板块 {sector_code} 中龙头得分: {score}")
-            return float(score)
+    try:
+        # 1. 从缓存读取板块成分股（sector_code 实际是板块名称）
+        members = get_sector_members_from_cache(sector_code, limit=50)
+        
+        if members:
+            # 查找股票排名
+            for idx, member in enumerate(members):
+                if member.get('stock_code') == stock_code:
+                    rank = idx + 1
+                    score = 100 * (1 - rank / len(members))
+                    print(f"👑 股票 {stock_code} 在板块 {sector_code} 中排名 {rank}/{len(members)}，得分: {score:.2f}")
+                    return round(score, 2)
+            print(f"⚠️ 股票 {stock_code} 不在板块 {sector_code} 的缓存中")
+            return 50.0
         else:
-            # 板块内有但不在预设列表，给中等分
-            print(f"⚠️ 股票 {stock_code} 在板块 {sector_code} 中但无预设排名，返回60")
-            return 60.0
-    
-    # 默认返回50分
-    print(f"⚠️ 未找到板块 {sector_code} 的龙头排名预设，返回默认值50")
+            # 2. 缓存为空，使用预置数据降级
+            print(f"⚠️ 缓存为空，使用预置数据降级")
+            return get_leader_score_fallback(stock_code, sector_code)
+            
+    except Exception as e:
+        print(f"❌ 计算龙头识别得分失败: {e}")
+        return 50.0
+
+
+def get_leader_score_fallback(stock_code: str, sector_name: str) -> float:
+    """降级方案：从 HOT_SECTORS 预置数据读取"""
+    if sector_name in HOT_SECTORS:
+        sector_info = HOT_SECTORS[sector_name]
+        stocks = sector_info.get("stocks", [])
+        for idx, code in enumerate(stocks):
+            if code == stock_code:
+                score = 100 * (1 - idx / len(stocks))
+                print(f"📋 降级: 股票 {stock_code} 在板块 {sector_name} 中得分: {score:.2f}")
+                return round(score, 2)
+    print(f"📋 降级: 未找到股票 {stock_code} 在板块 {sector_name} 的预置数据")
     return 50.0
 
 def calculate_trend_score(df: pd.DataFrame) -> float:
@@ -5428,7 +5500,18 @@ def render_admin_panel():
                     st.rerun()
                 except Exception as e:
                     st.error(f"同步失败: {e}")    
-    st.markdown("---")
+    with col3:
+        if st.button("🔄 同步板块成分股（每日更新）", key="sync_members_btn", use_container_width=True):
+            with st.spinner("正在同步成分股（需要2-3分钟）..."):
+                success, msg = sync_sector_members_to_cache()
+                if success:
+                    st.success(msg)
+                    st.balloons()
+                    st.session_state.sector_cache_loaded = False
+                    st.rerun()
+                else:
+                    st.error(msg)
+        st.markdown("---")
     
     if st.button("退出管理员模式", use_container_width=True):
         prev_user_id = st.session_state.get("admin_previous_user_id")
