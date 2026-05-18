@@ -2985,87 +2985,92 @@ def get_index_technical_indicators(index_code: str = "000001.SH") -> Dict:
         "summary": "简要总结"
     }
     """
-    if not TUSHARE_AVAILABLE:
-        return {
-            "macd": {"signal_level": "neutral", "score": 50},
-            "kdj": {"k": 50, "d": 50, "j": 50, "signal_level": "neutral", "score": 50},
-            "boll": {"signal_level": "neutral", "score": 50},
-            "rsi": {"rsi": 50, "signal_level": "neutral", "score": 50},
-            "trend": "数据不可用",
-            "trend_score": 50,
-            "summary": "Tushare未连接，无法获取大盘指标"
-        }
-    
-    df = get_stock_daily(index_code, days=120)
-    if df.empty:
-        return {
-            "macd": {"signal_level": "neutral", "score": 50},
-            "kdj": {"k": 50, "d": 50, "j": 50, "signal_level": "neutral", "score": 50},
-            "boll": {"signal_level": "neutral", "score": 50},
-            "rsi": {"rsi": 50, "signal_level": "neutral", "score": 50},
-            "trend": "数据不足",
-            "trend_score": 50,
-            "summary": "无法获取上证指数数据"
-        }
-    
-    # 计算各技术指标
-    macd = calculate_macd(df)
-    kdj = calculate_kdj(df)
-    boll = calculate_bollinger_bands(df)
-    rsi = calculate_rsi(df)
-    
-    # 计算综合趋势得分
-    trend_score = (
-        macd["score"] * 0.30 +
-        kdj["score"] * 0.25 +
-        boll["score"] * 0.20 +
-        rsi["score"] * 0.25
-    )
-    
-    # 判断趋势
-    if trend_score >= 70:
-        trend = "多头趋势 ↑"
-        trend_color = "🟢"
-    elif trend_score >= 55:
-        trend = "震荡偏多 ↗"
-        trend_color = "🟡"
-    elif trend_score >= 40:
-        trend = "震荡偏空 ↘"
-        trend_color = "🟠"
-    else:
-        trend = "空头趋势 ↓"
-        trend_color = "🔴"
-    
-    # 生成简要总结
-    signals = []
-    if macd["signal_level"] in ["golden_cross", "bullish"]:
-        signals.append("MACD偏多")
-    elif macd["signal_level"] in ["death_cross", "bearish"]:
-        signals.append("MACD偏空")
-    
-    if kdj["signal_level"] in ["oversold_golden", "bullish"]:
-        signals.append("KDJ金叉")
-    elif kdj["signal_level"] in ["overbought_death", "bearish"]:
-        signals.append("KDJ死叉")
-    
-    if rsi["rsi"] > 70:
-        signals.append("RSI超买")
-    elif rsi["rsi"] < 30:
-        signals.append("RSI超卖")
-    
-    summary = f"{trend_color} {trend} | " + (" | ".join(signals) if signals else "指标中性")
-    
-    return {
-        "macd": macd,
-        "kdj": kdj,  # kdj 包含 k, d, j, signal_level, score
-        "boll": boll,
-        "rsi": rsi,
-        "trend": trend,
-        "trend_score": round(trend_score, 1),
-        "summary": summary,
+    # 默认返回结构（确保始终是字典）
+    default_result = {
+        "macd": {"signal_level": "neutral", "score": 50},
+        "kdj": {"k": 50, "d": 50, "j": 50, "signal_level": "neutral", "score": 50},
+        "boll": {"signal_level": "neutral", "position": 0.5, "score": 50},
+        "rsi": {"rsi": 50, "signal_level": "neutral", "score": 50},
+        "trend": "数据不可用",
+        "trend_score": 50,
+        "summary": "Tushare未连接，无法获取大盘指标",
         "index_code": index_code,
         "index_name": "上证指数"
     }
+    
+    if not TUSHARE_AVAILABLE:
+        return default_result
+    
+    try:
+        df = get_stock_daily(index_code, days=120)
+        if df.empty:
+            return default_result
+        
+        # 计算各技术指标
+        macd = calculate_macd(df)
+        kdj = calculate_kdj(df)
+        boll = calculate_bollinger_bands(df)
+        rsi = calculate_rsi(df)
+        
+        # 计算综合趋势得分
+        trend_score = (
+            macd.get("score", 50) * 0.30 +
+            kdj.get("score", 50) * 0.25 +
+            boll.get("score", 50) * 0.20 +
+            rsi.get("score", 50) * 0.25
+        )
+        
+        # 判断趋势
+        if trend_score >= 70:
+            trend = "多头趋势 ↑"
+            trend_color = "🟢"
+        elif trend_score >= 55:
+            trend = "震荡偏多 ↗"
+            trend_color = "🟡"
+        elif trend_score >= 40:
+            trend = "震荡偏空 ↘"
+            trend_color = "🟠"
+        else:
+            trend = "空头趋势 ↓"
+            trend_color = "🔴"
+        
+        # 生成简要总结
+        signals = []
+        macd_signal = macd.get("signal_level", "neutral")
+        if macd_signal in ["golden_cross", "bullish"]:
+            signals.append("MACD偏多")
+        elif macd_signal in ["death_cross", "bearish"]:
+            signals.append("MACD偏空")
+        
+        kdj_signal = kdj.get("signal_level", "neutral")
+        if kdj_signal in ["oversold_golden", "bullish"]:
+            signals.append("KDJ金叉")
+        elif kdj_signal in ["overbought_death", "bearish"]:
+            signals.append("KDJ死叉")
+        
+        rsi_val = rsi.get("rsi", 50)
+        if rsi_val > 70:
+            signals.append("RSI超买")
+        elif rsi_val < 30:
+            signals.append("RSI超卖")
+        
+        summary = f"{trend_color} {trend} | " + (" | ".join(signals) if signals else "指标中性")
+        
+        return {
+            "macd": macd,
+            "kdj": kdj,
+            "boll": boll,
+            "rsi": rsi,
+            "trend": trend,
+            "trend_score": round(trend_score, 1),
+            "summary": summary,
+            "index_code": index_code,
+            "index_name": "上证指数"
+        }
+        
+    except Exception as e:
+        print(f"获取大盘指标失败: {e}")
+        return default_result
 
 
 # ==================== 模块1：市场简报 ====================
@@ -3096,62 +3101,83 @@ def render_market_brief():
     with st.spinner("正在获取市场数据..."):
         # ===== 上证指数技术指标（新增） =====
         st.markdown("**📈 大盘技术分析（上证指数）**")
-        index_indicators = get_index_technical_indicators("000001.SH")
         
-        # 显示技术指标卡片
-        col1, col2, col3, col4, col5 = st.columns(5)
-        with col1:
-            st.metric("趋势判断", index_indicators["trend"], delta=f"得分 {index_indicators['trend_score']:.0f}")
-        with col2:
-            macd_status = "金叉" if index_indicators["macd"]["signal_level"] == "golden_cross" else \
-                          "死叉" if index_indicators["macd"]["signal_level"] == "death_cross" else \
-                          "多头" if index_indicators["macd"]["signal_level"] == "bullish" else \
-                          "空头" if index_indicators["macd"]["signal_level"] == "bearish" else "中性"
-            st.metric("MACD", macd_status, delta=f"{index_indicators['macd']['score']:.0f}分")
-        with col3:
-            kdj_data = index_indicators.get('kdj', {})
-            k_val = kdj_data.get('k', 50)
-            d_val = kdj_data.get('d', 50)
-            kdj_status = f"K:{k_val:.0f}/D:{d_val:.0f}"
-            st.metric("KDJ", kdj_status, delta=f"{kdj_data.get('score', 50):.0f}分")
-        with col4:
-            rsi_val = index_indicators.get('rsi', {}).get('rsi', 50)
-            st.metric("RSI", f"{rsi_val:.0f}", 
-                     delta="超买" if rsi_val > 70 else "超卖" if rsi_val < 30 else "正常")
-        with col5:
-            boll_pos = "上轨" if index_indicators['boll']['position'] > 0.7 else \
-                       "下轨" if index_indicators['boll']['position'] < 0.3 else "中轨"
-            st.metric("布林带", boll_pos, delta=f"{index_indicators['boll']['score']:.0f}分")        
-        st.caption(f"📝 {index_indicators['summary']}")
+        try:
+            index_indicators = get_index_technical_indicators("000001.SH")
+            
+            # 安全检查：确保 index_indicators 是字典且包含必要的键
+            if isinstance(index_indicators, dict):
+                # 显示技术指标卡片
+                col1, col2, col3, col4, col5 = st.columns(5)
+                with col1:
+                    trend_text = index_indicators.get("trend", "数据不可用")
+                    trend_score = index_indicators.get("trend_score", 50)
+                    st.metric("趋势判断", trend_text, delta=f"得分 {trend_score:.0f}")
+                
+                with col2:
+                    macd_data = index_indicators.get("macd", {})
+                    macd_signal = macd_data.get("signal_level", "neutral")
+                    macd_score = macd_data.get("score", 50)
+                    macd_status = "金叉" if macd_signal == "golden_cross" else \
+                                  "死叉" if macd_signal == "death_cross" else \
+                                  "多头" if macd_signal == "bullish" else \
+                                  "空头" if macd_signal == "bearish" else "中性"
+                    st.metric("MACD", macd_status, delta=f"{macd_score:.0f}分")
+                
+                with col3:
+                    kdj_data = index_indicators.get("kdj", {})
+                    k_val = kdj_data.get("k", 50) if isinstance(kdj_data, dict) else 50
+                    d_val = kdj_data.get("d", 50) if isinstance(kdj_data, dict) else 50
+                    kdj_score = kdj_data.get("score", 50) if isinstance(kdj_data, dict) else 50
+                    kdj_status = f"K:{k_val:.0f}/D:{d_val:.0f}"
+                    st.metric("KDJ", kdj_status, delta=f"{kdj_score:.0f}分")
+                
+                with col4:
+                    rsi_data = index_indicators.get("rsi", {})
+                    rsi_val = rsi_data.get("rsi", 50) if isinstance(rsi_data, dict) else 50
+                    rsi_delta = "超买" if rsi_val > 70 else "超卖" if rsi_val < 30 else "正常"
+                    st.metric("RSI", f"{rsi_val:.0f}", delta=rsi_delta)
+                
+                with col5:
+                    boll_data = index_indicators.get("boll", {})
+                    boll_pos = boll_data.get("position", 0.5) if isinstance(boll_data, dict) else 0.5
+                    boll_score = boll_data.get("score", 50) if isinstance(boll_data, dict) else 50
+                    boll_status = "上轨" if boll_pos > 0.7 else "下轨" if boll_pos < 0.3 else "中轨"
+                    st.metric("布林带", boll_status, delta=f"{boll_score:.0f}分")
+                
+                summary = index_indicators.get("summary", "数据获取中")
+                st.caption(f"📝 {summary}")
+            else:
+                st.warning("无法获取大盘技术指标")
+        except Exception as e:
+            st.warning(f"获取大盘指标时出错: {str(e)}")
+        
         st.markdown("---")
         
         # 使用缓存获取板块表现
-        sector_df = get_cached_sector_performance()
-        
-        market_trend = index_indicators["trend"].replace("↑", "").replace("↗", "").replace("↘", "").replace("↓", "").strip()
-        market_desc = f"上证指数{market_trend}，{index_indicators['summary']}。科技板块持续活跃，建议关注热点板块轮动机会。"
-        
-        st.info(f"📈 **大盘趋势**: {index_indicators['trend']}\n\n📝 **市场解读**: {market_desc}")
-        
-        if not sector_df.empty:
-            st.markdown("**🔥 今日热点板块**")
-            sector_df = sector_df.sort_values("涨跌幅", ascending=False)
-            st.dataframe(
-                sector_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "板块": st.column_config.TextColumn("板块"),
-                    "涨跌幅": st.column_config.NumberColumn("涨跌幅", format="%.2f%%"),
-                    "领涨股": st.column_config.TextColumn("领涨股")
-                }
-            )
-        else:
-            st.caption("暂无热点板块数据，请稍后刷新")
+        try:
+            sector_df = get_cached_sector_performance()
+            
+            if not sector_df.empty:
+                st.markdown("**🔥 今日热点板块**")
+                sector_df = sector_df.sort_values("涨跌幅", ascending=False)
+                st.dataframe(
+                    sector_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "板块": st.column_config.TextColumn("板块"),
+                        "涨跌幅": st.column_config.NumberColumn("涨跌幅", format="%.2f%%"),
+                        "领涨股": st.column_config.TextColumn("领涨股")
+                    }
+                )
+            else:
+                st.caption("暂无热点板块数据，请稍后刷新")
+        except Exception as e:
+            st.caption(f"获取板块数据时出错: {str(e)}")
         
         st.markdown("**🎯 龙头股关注**")
         st.caption("• 光模块/CPO: 中际旭创、天孚通信、新易盛\n• 人工智能: 科大讯飞、海康威视\n• 半导体: 中芯国际、北方华创\n• 机器人: 汇川技术、埃斯顿")
-
 
 # ==================== 模块2：推荐股票池 ====================
 
