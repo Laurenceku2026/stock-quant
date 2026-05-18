@@ -1646,7 +1646,8 @@ def render_login_form():
                         if success:
                             st.session_state.authenticated = True
                             st.session_state.user_id = user_id
-                            st.session_state.user_email = user_email                            st.session_state.access_token = access_token
+                            st.session_state.user_email = user_email                            
+                            st.session_state.access_token = access_token
                             st.session_state.refresh_token = refresh_token
                             st.session_state.token_expiry = time.time() + 3600
                             st.session_state.show_paywall = False
