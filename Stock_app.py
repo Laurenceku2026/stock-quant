@@ -863,104 +863,105 @@ init_gm()
 
 # ==================== AkShare 龙头股数据获取 ====================
 
-def get_concept_stocks_akshare(concept_name: str) -> List[Dict]:
+# ==================== Tushare 板块数据获取（替代 AkShare） ====================
+
+def get_concept_stocks_tushare(concept_name: str) -> List[Dict]:
     """
-    使用 AkShare 获取概念板块成分股（龙头股）
-    返回: [{"code": "000001.SZ", "name": "平安银行", "rank": 1, "pct_chg": 5.2}, ...]
+    使用 Tushare concept_detail 获取概念板块成分股
+    2000积分即可使用
     """
+    if not TUSHARE_AVAILABLE:
+        return []
+    
     try:
-        import akshare as ak
+        # 1. 先获取概念板块的id
+        concept_df = TUSHARE_PRO.concept()
+        if concept_df is None or concept_df.empty:
+            return []
         
-        # 获取指定概念板块的成分股
-        df = ak.stock_board_concept_cons_em(symbol=concept_name)
+        # 查找板块id
+        concept_row = concept_df[concept_df['name'] == concept_name]
+        if concept_row.empty:
+            return []
+        
+        concept_id = concept_row.iloc[0]['code']
+        
+        # 2. 获取板块成分股
+        df = TUSHARE_PRO.concept_detail(id=concept_id)
         
         if df is not None and not df.empty:
             result = []
             for _, row in df.iterrows():
-                code = row.get('代码', '')
-                name = row.get('名称', '')
-                pct_chg = row.get('涨跌幅', 0)
-                
-                # 转换为 Tushare 格式（如 000001.SZ）
-                if code:
-                    if code.startswith('6'):
-                        ts_code = f"{code}.SH"
-                    else:
-                        ts_code = f"{code}.SZ"
-                    
+                ts_code = row.get('ts_code', '')
+                name = row.get('name', '')
+                if ts_code:
                     result.append({
                         "code": ts_code,
                         "name": name,
-                        "pct_chg": pct_chg,
                         "board_name": concept_name
                     })
             
-            # 按涨跌幅排序，识别龙头股
-            result.sort(key=lambda x: x.get('pct_chg', 0), reverse=True)
+            # 按代码排序（Tushare 没有直接提供涨跌幅，先返回原序）
             for i, stock in enumerate(result):
-                stock['rank'] = i + 1  # 排名，1为龙头
+                stock['rank'] = i + 1
             
             return result
         return []
     except Exception as e:
-        print(f"AkShare 获取板块成分失败 {concept_name}: {e}")
+        print(f"Tushare 获取板块成分失败 {concept_name}: {e}")
         return []
 
-def get_hot_concepts_akshare(limit: int = 10) -> List[Dict]:
-    """
-    获取热门概念板块列表（按涨跌幅排序）
-    返回: [{"name": "人工智能", "pct_chg": 3.2, "leader_stock": "000001.SZ"}, ...]
-    """
+
+def get_hot_concepts_tushare(limit: int = 10) -> List[Dict]:
+    """获取热门概念板块列表（使用 Tushare）"""
+    if not TUSHARE_AVAILABLE:
+        return []
+    
     try:
-        import akshare as ak
-        
-        # 获取所有概念板块行情
-        df = ak.stock_board_concept_name_em()
-        
-        if df is None or df.empty:
+        # 获取所有概念板块
+        concept_df = TUSHARE_PRO.concept()
+        if concept_df is None or concept_df.empty:
             return []
         
-        # 获取涨跌幅数据
-        concept_list = []
-        for _, row in df.iterrows():
-            concept_name = row.get('板块名称', '')
-            if concept_name:
-                concept_list.append({
-                    "name": concept_name,
-                    "code": concept_name
-                })
-        
-        # 获取每个板块的涨跌幅（简化版，使用成分股平均涨跌幅）
+        # 获取每个板块的行情数据来排序
         hot_concepts = []
-        for concept in concept_list[:20]:  # 取前20个板块分析
-            members = get_concept_stocks_akshare(concept['name'])
-            if members:
-                avg_pct = sum([s.get('pct_chg', 0) for s in members]) / len(members)
-                leader = members[0] if members else None
-                hot_concepts.append({
-                    "name": concept['name'],
-                    "pct_chg": round(avg_pct, 2),
-                    "leader_code": leader['code'] if leader else '',
-                    "leader_name": leader['name'] if leader else '',
-                    "member_count": len(members)
-                })
+        for _, row in concept_df.iterrows():
+            concept_name = row.get('name', '')
+            concept_code = row.get('code', '')
+            
+            # 获取板块行情
+            try:
+                end_date = datetime.now().strftime("%Y%m%d")
+                start_date = (datetime.now() - timedelta(days=5)).strftime("%Y%m%d")
+                daily_df = TUSHARE_PRO.concept_daily(concept_code=concept_code, 
+                                                      start_date=start_date, 
+                                                      end_date=end_date)
+                if daily_df is not None and not daily_df.empty:
+                    avg_pct = daily_df['pct_chg'].mean()
+                else:
+                    avg_pct = 0
+            except:
+                avg_pct = 0
+            
+            hot_concepts.append({
+                "name": concept_name,
+                "code": concept_code,
+                "pct_chg": round(avg_pct, 2)
+            })
         
         # 按涨跌幅排序
         hot_concepts.sort(key=lambda x: x.get('pct_chg', 0), reverse=True)
         return hot_concepts[:limit]
         
     except Exception as e:
-        print(f"AkShare 获取热门板块失败: {e}")
+        print(f"Tushare 获取热门板块失败: {e}")
         return []
 
 
 def get_leader_rank_in_concept(stock_code: str, concept_name: str) -> int:
-    """
-    获取股票在指定概念板块中的龙头排名
-    返回: 排名（1为龙头），0表示未找到
-    """
+    """获取股票在指定概念板块中的龙头排名"""
     try:
-        members = get_concept_stocks_akshare(concept_name)
+        members = get_concept_stocks_tushare(concept_name)
         for member in members:
             if member['code'] == stock_code:
                 return member.get('rank', 0)
@@ -2131,7 +2132,7 @@ print("=" * 60)
 # ==================== Tushare 数据获取 ====================
 @tushare_request_with_retry
 def get_stock_daily(ts_code: str, days: int = 120) -> pd.DataFrame:
-    """获取股票或指数日线数据（自动识别）"""
+    """获取股票或指数日线数据"""
     if not TUSHARE_AVAILABLE or TUSHARE_PRO is None:
         return pd.DataFrame()
     
@@ -2145,24 +2146,19 @@ def get_stock_daily(ts_code: str, days: int = 120) -> pd.DataFrame:
         }
         
         if ts_code in index_code_map:
-            # 获取指数数据
             real_code = index_code_map[ts_code]
-            df = TUSHARE_PRO.index_daily(code=real_code, start_date=start_date, end_date=end_date)
-            if df is not None and len(df) > 0:
+            # 🔧 修复：参数名必须是 ts_code，不是 code
+            df = TUSHARE_PRO.index_daily(ts_code=real_code, start_date=start_date, end_date=end_date)
+            if df is not None and not df.empty:
                 df = df.sort_values('trade_date')
                 df = df.rename(columns={'trade_date': 'date'})
-                # 指数没有成交量，添加一个默认列
-                df['volume'] = 0
+                df['volume'] = 0  # 指数没有成交量
                 return df
         else:
-            # 获取股票数据
             df = TUSHARE_PRO.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
-            if df is not None and len(df) > 0:
+            if df is not None and not df.empty:
                 df = df.sort_values('trade_date')
-                df = df.rename(columns={
-                    'trade_date': 'date',
-                    'vol': 'volume'
-                })
+                df = df.rename(columns={'trade_date': 'date', 'vol': 'volume'})
                 return df
         
         return pd.DataFrame()
@@ -2655,50 +2651,33 @@ def calculate_sector_heat_score(sector_code: str = None, sector_name: str = None
 
 def calculate_leader_score(stock_code: str, sector_code: str = None) -> float:
     """
-    计算龙头识别得分（使用 AkShare 获取板块成分股排名）
+    计算龙头识别得分（使用 Tushare concept_detail）
     权重：占综合评分的 30%
     """
-    # 如果没有板块信息，返回默认分
     if not sector_code:
         return 50.0
     
     try:
-        # 注意：sector_code 实际上是板块名称（因为 Tushare 传的是名称）
-        # 为了兼容，直接使用 sector_code 作为板块名称
-        concept_name = sector_code
-        
-        # 使用 AkShare 获取板块成分股
-        members = get_concept_stocks_akshare(concept_name)
+        # sector_code 实际传入的是板块名称
+        members = get_concept_stocks_tushare(sector_code)
         
         if not members:
             return 50.0
         
-        # 1. 排名得分（50%）：排名越靠前得分越高
+        # 查找个股排名
         rank = 0
-        stock_pct = 0
         for member in members:
             if member['code'] == stock_code:
                 rank = member.get('rank', 0)
-                stock_pct = member.get('pct_chg', 0)
                 break
         
         if rank > 0:
+            # 排名越靠前得分越高
             rank_score = 100 * (1 - rank / len(members))
         else:
             rank_score = 50
         
-        # 2. 相对强度得分（50%）：个股涨幅 vs 板块平均涨幅
-        avg_pct = sum([m.get('pct_chg', 0) for m in members]) / len(members)
-        
-        if avg_pct != 0:
-            relative_strength = (stock_pct - avg_pct) / abs(avg_pct) * 50
-            strength_score = min(100, max(0, 50 + relative_strength))
-        else:
-            strength_score = 50
-        
-        # 综合得分
-        total_score = rank_score * 0.50 + strength_score * 0.50
-        return round(total_score, 2)
+        return round(rank_score, 2)
         
     except Exception as e:
         print(f"计算龙头识别得分失败 {stock_code}: {e}")
