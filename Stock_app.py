@@ -3309,6 +3309,57 @@ MODULE_WEIGHT_KEYS = {
     "live_signals": "weights_live_signals"        # 实操信号权重
 }
 
+# 各模块的默认权重（4个层级）
+MODULE_DEFAULT_WEIGHTS = {
+    "market_brief": {      # 市场简报
+        "sector_heat": 0.40,
+        "leader": 0.30,
+        "technical": 0.20,
+        "trend": 0.10
+    },
+    "recommended": {       # 推荐股票池
+        "sector_heat": 0.40,
+        "leader": 0.30,
+        "technical": 0.20,
+        "trend": 0.10
+    },
+    "stock_analysis": {    # 个股分析
+        "sector_heat": 0.25,
+        "leader": 0.15,
+        "technical": 0.40,
+        "trend": 0.20
+    },
+    "backtest": {          # 回测功能
+        "sector_heat": 0.25,
+        "leader": 0.15,
+        "technical": 0.40,
+        "trend": 0.20
+    },
+    "live_signals": {      # 实操信号
+        "sector_heat": 0.25,
+        "leader": 0.15,
+        "technical": 0.40,
+        "trend": 0.20
+    }
+}
+
+# 各层级的可调范围
+WEIGHT_RANGES = {
+    "sector_heat": (0, 60),   # (min%, max%)
+    "leader": (0, 50),
+    "technical": (0, 40),
+    "trend": (0, 30)
+}
+
+def get_module_default_weights(module_name: str) -> Dict:
+    """获取模块的默认权重"""
+    return MODULE_DEFAULT_WEIGHTS.get(module_name, {
+        "sector_heat": 0.25,
+        "leader": 0.15,
+        "technical": 0.40,
+        "trend": 0.20
+    }).copy()
+
 def get_module_weights(module_name: str) -> Dict:
     key = MODULE_WEIGHT_KEYS.get(module_name)
     if not key:
