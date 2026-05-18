@@ -201,6 +201,65 @@ MARKET_OPTIONS = ["A股", "港股", "美股"]
 # 股票名称缓存
 STOCK_NAME_CACHE = {}
 
+# ==================== 掘金板块数据获取 ====================
+
+def get_ths_sector_list() -> List[Dict]:
+    """
+    获取同花顺板块列表
+    返回: [{"code": "BK0001", "name": "人工智能", ...}, ...]
+    """
+    if not GM_AVAILABLE:
+        return []
+    
+    try:
+        from gm.api import get_ths_index
+        # 获取同花顺概念板块列表
+        sectors = get_ths_index(sector_type="concept")
+        if sectors is not None and len(sectors) > 0:
+            return sectors.to_dict('records')
+        return []
+    except Exception as e:
+        print(f"获取同花顺板块列表失败: {e}")
+        return []
+
+def get_ths_sector_daily(sector_code: str, days: int = 5) -> pd.DataFrame:
+    """
+    获取同花顺板块日线行情
+    返回: DataFrame包含 date, close, pct_chg, volume, amount
+    """
+    if not GM_AVAILABLE:
+        return pd.DataFrame()
+    
+    try:
+        from gm.api import get_ths_daily
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        df = get_ths_daily(symbol=sector_code, start_date=start_date, end_date=end_date)
+        if df is not None and len(df) > 0:
+            return df
+        return pd.DataFrame()
+    except Exception as e:
+        print(f"获取板块行情失败 {sector_code}: {e}")
+        return pd.DataFrame()
+
+def get_ths_sector_members(sector_code: str) -> List[str]:
+    """
+    获取同花顺板块成分股列表
+    返回: 股票代码列表
+    """
+    if not GM_AVAILABLE:
+        return []
+    
+    try:
+        from gm.api import get_ths_member
+        members = get_ths_member(sector_code)
+        if members is not None and len(members) > 0:
+            return members['symbol'].tolist()
+        return []
+    except Exception as e:
+        print(f"获取板块成分失败 {sector_code}: {e}")
+        return []
+
 # ==================== Supabase 配置 ====================
 SUPABASE_URL = st.secrets.get("SUPABASE_STOCK_URL", "")
 SUPABASE_PUBLISHABLE_KEY = st.secrets.get("SUPABASE_STOCK_ANON_KEY", "")
@@ -1474,51 +1533,74 @@ def refresh_live_pool_prices(user_id: str, access_token: str = None) -> tuple:
 # ==================== 自动推荐Top10（保留） ====================
 
 def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
-    """自动推荐Top10股票（基于技术指标评分）"""
-   
+    """
+    自动推荐Top10股票（基于完整评分：板块热度+龙头识别+技术指标）
+    """
     if not TUSHARE_AVAILABLE:
         st.error("❌ Tushare不可用")
         return []
     
-    all_stocks = []
-    for sector_name, sector_info in HOT_SECTORS.items():
-        for i, ts_code in enumerate(sector_info["stocks"]):
-            stock_name = sector_info["names"][i] if i < len(sector_info["names"]) else ts_code
-            all_stocks.append({"code": ts_code, "name": stock_name, "sector": sector_name})
+    # 获取热点板块（优先使用掘金，降级使用预置）
+    hot_sectors_data = []
+    if GM_AVAILABLE:
+        try:
+            ths_sectors = get_ths_sector_list()
+            hot_sectors_data = ths_sectors[:10]  # 取前10个热门板块
+        except:
+            pass
     
+    if not hot_sectors_data:
+        # 降级使用预置板块
+        for sector_name, sector_info in HOT_SECTORS.items():
+            hot_sectors_data.append({
+                "name": sector_name,
+                "code": sector_name,
+                "stocks": sector_info["stocks"],
+                "names": sector_info["names"]
+            })
+    
+    all_scored_stocks = []
+    for sector in hot_sectors_data:
+        sector_code = sector.get("code")
+        sector_name = sector.get("name")
+        stock_codes = sector.get("stocks", [])
+        stock_names = sector.get("names", [])
+        
+        for i, ts_code in enumerate(stock_codes[:5]):  # 每个板块取前5只
+            stock_name = stock_names[i] if i < len(stock_names) else ts_code
+            # 使用完整评分，传入板块信息
+            score_result = get_stock_score(ts_code, stock_name, sector_code=sector_code, sector_name=sector_name)
+            all_scored_stocks.append({
+                "code": ts_code,
+                "name": stock_name,
+                "score": score_result["total_score"],
+                "level": score_result["level"],
+                "action": score_result["action"],
+                "sector": sector_name,
+                "sector_heat": score_result["sector_heat_score"],
+                "leader_score": score_result["leader_score"],
+                "tech_score": score_result["tech_score"],
+                "trend_score": score_result["trend_score"]
+            })
+    
+    # 去重
     seen = set()
     unique_stocks = []
-    for stock in all_stocks:
+    for stock in all_scored_stocks:
         if stock["code"] not in seen:
             seen.add(stock["code"])
             unique_stocks.append(stock)
     
-    scored_stocks = []
-    for idx, stock in enumerate(unique_stocks):
-        score_result = get_stock_score(stock["code"], stock["name"])
-        scored_stocks.append({
-            "code": stock["code"],
-            "name": stock["name"],
-            "score": score_result["total_score"],
-            "level": score_result["level"],
-            "action": score_result["action"],
-            "sector": stock["sector"]
-        })
+    # 按总分排序
+    unique_stocks.sort(key=lambda x: x["score"], reverse=True)
+    top10 = unique_stocks[:10]
     
-    scored_stocks.sort(key=lambda x: x["score"], reverse=True)
-    top10 = scored_stocks[:10]
-    
-    # ===== 显示Top10结果 =====
-    for i, stock in enumerate(top10):
-        st.write(f"   {i+1}. {stock['code']} ({stock['name']}) - 得分: {stock['score']}")
-    # =========================
-    
+    # 添加到推荐池
     for stock in top10:
-        success, msg = add_to_recommended_pool(
+        add_to_recommended_pool(
             user_id, stock["code"], stock["name"], source="ai", 
             score=stock["score"], access_token=access_token
         )
-        st.write(f"   添加 {stock['code']}: {success} - {msg}")
     
     return top10
 
@@ -2358,48 +2440,227 @@ def calculate_technical_score(df: pd.DataFrame, tech_weights: Dict = None) -> Di
         "details": details
     }
 
+# ==================== 完整评分引擎（板块热度 + 龙头识别 + 技术指标 + 长短期趋势） ====================
 
-def get_stock_score(ts_code: str, stock_name: str = "", tech_weights: Dict = None) -> Dict:
-    """获取个股综合评分，支持自定义权重"""
+def calculate_sector_heat_score(sector_code: str = None, sector_name: str = None) -> float:
+    """
+    计算板块热度得分（40%权重）
+    因子：
+    - 成交量活跃度（35%）：板块成交额 / 全市场成交额
+    - 价格强度（35%）：板块5日/20日涨跌幅
+    - 涨停家数（30%）：板块内涨停股票数量
+    """
+    # 如果没有掘金连接或未指定板块，返回默认分
+    if not GM_AVAILABLE or (sector_code is None and sector_name is None):
+        return 50.0
     
+    try:
+        # 1. 获取板块行情数据
+        if sector_code:
+            df = get_ths_sector_daily(sector_code, days=20)
+        else:
+            # 如果没有code，尝试按名称查找
+            sectors = get_ths_sector_list()
+            for s in sectors:
+                if s.get('name') == sector_name:
+                    sector_code = s.get('code')
+                    break
+            if sector_code:
+                df = get_ths_sector_daily(sector_code, days=20)
+            else:
+                return 50.0
+        
+        if df.empty or len(df) < 5:
+            return 50.0
+        
+        # 2. 计算成交量活跃度（35%）
+        latest_volume = df['volume'].iloc[-1] if 'volume' in df.columns else 0
+        avg_volume = df['volume'].iloc[-5:].mean() if 'volume' in df.columns else 1
+        volume_ratio = latest_volume / avg_volume if avg_volume > 0 else 1
+        volume_score = min(100, volume_ratio * 50)  # 放量2倍得100分
+        
+        # 3. 计算价格强度（35%）
+        if 'pct_chg' in df.columns:
+            chg_5d = df['pct_chg'].iloc[-5:].sum() if len(df) >= 5 else 0
+            chg_20d = df['pct_chg'].sum() if len(df) >= 20 else chg_5d
+            # 涨跌幅映射到0-100分（涨10%得100分，跌10%得0分）
+            price_score = min(100, max(0, (chg_5d + 10) * 5))
+        else:
+            price_score = 50
+        
+        # 4. 计算涨停家数（30%）- 简化版，实际需要个股数据
+        limit_up_score = 50  # 默认中性
+        
+        # 综合得分
+        total_score = volume_score * 0.35 + price_score * 0.35 + limit_up_score * 0.30
+        return round(total_score, 2)
+        
+    except Exception as e:
+        print(f"计算板块热度得分失败: {e}")
+        return 50.0
+
+def calculate_leader_score(stock_code: str, sector_code: str = None) -> float:
+    """
+    计算龙头识别得分（30%权重）
+    因子：
+    - 相对强度（40%）：个股涨幅 / 板块涨幅
+    - 市值承载（30%）：流通市值分位数
+    - 流动性（30%）：日均成交额分位数
+    """
+    try:
+        # 1. 相对强度（40%）
+        stock_df = get_stock_daily(stock_code, days=20)
+        if stock_df.empty:
+            relative_strength = 1.0
+        else:
+            stock_chg = (stock_df['close'].iloc[-1] - stock_df['close'].iloc[-5]) / stock_df['close'].iloc[-5] * 100 if len(stock_df) >= 5 else 0
+            
+            if sector_code and GM_AVAILABLE:
+                sector_df = get_ths_sector_daily(sector_code, days=5)
+                if not sector_df.empty and 'pct_chg' in sector_df.columns:
+                    sector_chg = sector_df['pct_chg'].iloc[-5:].sum()
+                else:
+                    sector_chg = 1.0
+            else:
+                sector_chg = 1.0
+            
+            relative_strength = (stock_chg + 10) / (sector_chg + 10) if sector_chg > -10 else 1.0
+        
+        strength_score = min(100, relative_strength * 50)
+        
+        # 2. 市值和流动性（简化版，需要从Tushare获取）
+        # 默认给中等分数
+        market_cap_score = 50
+        liquidity_score = 50
+        
+        total_score = strength_score * 0.40 + market_cap_score * 0.30 + liquidity_score * 0.30
+        return round(total_score, 2)
+        
+    except Exception as e:
+        print(f"计算龙头识别得分失败: {e}")
+        return 50.0
+
+def calculate_trend_score(df: pd.DataFrame) -> float:
+    """
+    计算长短期趋势得分（10%权重）
+    因子：
+    - 长期趋势（30%）：MA60斜率
+    - 波动率（15%）：历史波动率
+    - 突破信号（30%）：近期放量突破
+    - 短线动能（25%）：RSI + KDJ
+    """
+    if df.empty or len(df) < 60:
+        return 50.0
+    
+    try:
+        close = df['close'].values
+        
+        # 1. 长期趋势（30%）
+        ma60 = df['close'].rolling(60).mean().iloc[-1]
+        ma120 = df['close'].rolling(120).mean().iloc[-1] if len(df) >= 120 else ma60
+        if ma120 > 0:
+            ma_slope = (ma60 - ma120) / ma120 * 100
+        else:
+            ma_slope = 0
+        trend_score = min(100, max(0, (ma_slope + 10) * 5))
+        
+        # 2. 波动率（15%）
+        returns = close[-20:] / close[-21:-1] - 1 if len(close) > 21 else [0]
+        volatility = np.std(returns) * np.sqrt(252) * 100
+        volatility_score = min(100, max(0, 100 - volatility))  # 波动率越小分越高
+        
+        # 3. 突破信号（30%）
+        volume = df['volume'].values
+        if len(volume) >= 20:
+            avg_volume = np.mean(volume[-20:-5])
+            latest_volume = volume[-1]
+            volume_ratio = latest_volume / avg_volume if avg_volume > 0 else 1
+            break_score = min(100, volume_ratio * 50)
+        else:
+            break_score = 50
+        
+        # 4. 短线动能（25%）
+        rsi_data = calculate_rsi(df)
+        kdj_data = calculate_kdj(df)
+        momentum_score = (rsi_data.get('score', 50) + kdj_data.get('score', 50)) / 2
+        
+        total_score = trend_score * 0.30 + volatility_score * 0.15 + break_score * 0.30 + momentum_score * 0.25
+        return round(total_score, 2)
+        
+    except Exception as e:
+        print(f"计算趋势得分失败: {e}")
+        return 50.0
+
+def calculate_full_score(
+    ts_code: str, 
+    sector_code: str = None, 
+    sector_name: str = None,
+    tech_weights: Dict = None
+) -> Dict:
+    """
+    完整评分引擎
+    综合得分 = 板块热度 × 0.40 + 龙头识别 × 0.30 + 技术指标 × 0.20 + 长短期趋势 × 0.10
+    """
+    # 1. 板块热度得分（40%）
+    sector_heat_score = calculate_sector_heat_score(sector_code, sector_name)
+    
+    # 2. 龙头识别得分（30%）
+    leader_score = calculate_leader_score(ts_code, sector_code)
+    
+    # 3. 技术指标得分（20%）
     df = get_stock_daily(ts_code, days=120)
-    
     if df.empty:
-        total_score = 50
-        level = "D"
-        action = "观望"
-        position = "0%"
         tech_score = 50
         tech_details = {}
     else:
         tech_result = calculate_technical_score(df, tech_weights)
-        tech_score = tech_result["score"]
-        tech_details = tech_result["details"]
-        total_score = tech_score
-        
-        level = "D"
-        action = "观望"
-        position = "0%"
-        for lvl, config in SIGNAL_LEVELS.items():
-            if total_score >= config["min_score"]:
-                level = lvl
-                action = config["action"]
-                position = config["position"]
-                break
+        tech_score = tech_result['score']
+        tech_details = tech_result['details']
     
-    name = stock_name if stock_name else get_stock_name_from_tushare(ts_code)
+    # 4. 长短期趋势得分（10%）
+    trend_score = calculate_trend_score(df) if not df.empty else 50
     
-    result = {
-        "stock_code": ts_code,
-        "stock_name": name,
+    # 5. 计算总分
+    total_score = (
+        sector_heat_score * 0.40 +
+        leader_score * 0.30 +
+        tech_score * 0.20 +
+        trend_score * 0.10
+    )
+    
+    # 确定等级
+    level = "D"
+    action = "观望"
+    position = "0%"
+    for lvl, config in SIGNAL_LEVELS.items():
+        if total_score >= config["min_score"]:
+            level = lvl
+            action = config["action"]
+            position = config["position"]
+            break
+    
+    return {
         "total_score": round(total_score, 2),
         "level": level,
         "action": action,
         "position": position,
+        "sector_heat_score": round(sector_heat_score, 2),
+        "leader_score": round(leader_score, 2),
         "tech_score": round(tech_score, 2),
+        "trend_score": round(trend_score, 2),
         "tech_details": tech_details,
-        "reasons": generate_score_reasons(total_score)
+        "stock_name": get_stock_name_from_tushare(ts_code)
     }
+
+def get_stock_score(ts_code: str, stock_name: str = "", tech_weights: Dict = None, sector_code: str = None, sector_name: str = None) -> Dict:
+    """
+    获取个股综合评分（完整版：板块热度+龙头识别+技术指标+趋势）
+    支持传入板块信息以提高评分准确性
+    """
+    result = calculate_full_score(ts_code, sector_code, sector_name, tech_weights)
+    result["stock_code"] = ts_code
+    result["stock_name"] = stock_name if stock_name else get_stock_name_from_tushare(ts_code)
+    result["reasons"] = generate_score_reasons(result["total_score"])
     return result
 
 
