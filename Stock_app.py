@@ -2134,7 +2134,7 @@ print("=" * 60)
 def get_stock_daily(ts_code: str, days: int = 120) -> pd.DataFrame:
     """获取股票或指数日线数据"""
     if not TUSHARE_AVAILABLE or TUSHARE_PRO is None:
-        return pd.DataFrame()
+        return pd.DataFrame()  # 返回空 DataFrame，不是 None
     
     try:
         end_date = datetime.now().strftime("%Y%m%d")
@@ -2142,29 +2142,31 @@ def get_stock_daily(ts_code: str, days: int = 120) -> pd.DataFrame:
         
         # 判断是否为指数代码
         index_code_map = {
-            "000001.SH": "000001.SH",  # 上证指数
+            "000001.SH": "000001.SH",
         }
         
         if ts_code in index_code_map:
             real_code = index_code_map[ts_code]
-            # 🔧 修复：参数名必须是 ts_code，不是 code
             df = TUSHARE_PRO.index_daily(ts_code=real_code, start_date=start_date, end_date=end_date)
             if df is not None and not df.empty:
                 df = df.sort_values('trade_date')
                 df = df.rename(columns={'trade_date': 'date'})
-                df['volume'] = 0  # 指数没有成交量
+                df['volume'] = 0
                 return df
+            else:
+                return pd.DataFrame()  # 返回空 DataFrame
         else:
             df = TUSHARE_PRO.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
             if df is not None and not df.empty:
                 df = df.sort_values('trade_date')
                 df = df.rename(columns={'trade_date': 'date', 'vol': 'volume'})
                 return df
+            else:
+                return pd.DataFrame()  # 返回空 DataFrame
         
-        return pd.DataFrame()
     except Exception as e:
         print(f"获取数据失败 {ts_code}: {e}")
-        return pd.DataFrame()
+        return pd.DataFrame()  # 返回空 DataFrame，不是 None
 
 def get_sector_performance() -> pd.DataFrame:
     """
@@ -2738,7 +2740,7 @@ def calculate_full_score(
     ts_code: str, 
     sector_code: str = None, 
     sector_name: str = None,
-    user_weights: Dict = None  # 传入用户配置的4层权重
+    user_weights: Dict = None
 ) -> Dict:
     """
     完整评分引擎
@@ -2754,22 +2756,22 @@ def calculate_full_score(
     # 2. 龙头识别得分
     leader_score = calculate_leader_score(ts_code, sector_code)
     
-    # 3. 技术指标得分（内部还有子权重，单独处理）
+    # 3. 技术指标得分 + 趋势得分
     df = get_stock_daily(ts_code, days=120)
-    if df.empty:
+    
+    # 🔧 修复：检查 df 是否为 None 或空
+    if df is None or df.empty:
         tech_score = 50
         tech_details = {}
+        trend_score = 50
     else:
-        # 技术指标子权重从另一个地方获取
         tech_sub_weights = user_weights.get("tech_weights", TECH_WEIGHTS)
         tech_result = calculate_technical_score(df, tech_sub_weights)
         tech_score = tech_result['score']
         tech_details = tech_result['details']
+        trend_score = calculate_trend_score(df)
     
-    # 4. 长短期趋势得分
-    trend_score = calculate_trend_score(df) if not df.empty else 50
-    
-    # 5. 使用4层权重计算总分
+    # 4. 使用4层权重计算总分
     total_score = (
         sector_heat_score * user_weights.get("sector_heat", 0.25) +
         leader_score * user_weights.get("leader", 0.15) +
