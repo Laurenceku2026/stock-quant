@@ -913,66 +913,45 @@ def get_concept_stocks_tushare(concept_name: str) -> List[Dict]:
 
 
 def get_hot_concepts_tushare(limit: int = 10) -> List[Dict]:
+    """获取热门概念板块列表（直接使用 concept 接口）"""
     st.write("🔥 DEBUG: get_hot_concepts_tushare 被调用")
-    print("🔥 DEBUG: get_hot_concepts_tushare 被调用")
     
     if not TUSHARE_AVAILABLE:
-        st.write("❌ Tushare 不可用")
         return []
     
-    st.write("✅ Tushare 可用，开始获取概念板块...")
-    
     try:
-        # 获取所有概念板块
-        concept_df = TUSHARE_PRO.concept()
-        st.write(f"📊 获取到概念板块数量: {len(concept_df) if concept_df is not None else 0}")
+        # concept 接口直接返回板块列表及涨跌幅
+        df = TUSHARE_PRO.concept()
         
-        if concept_df is None or concept_df.empty:
+        if df is None or df.empty:
             st.write("❌ 概念板块数据为空")
             return []
         
-        hot_concepts = []
-        total = len(concept_df)
+        st.write(f"📊 获取到 {len(df)} 个概念板块")
         
-        for idx, (_, row) in enumerate(concept_df.iterrows()):
-            st.write(f"🔄 处理第 {idx+1}/{total} 个板块: {row.get('name', '')}")
-            
+        # 直接使用 concept 接口返回的涨跌幅数据
+        hot_concepts = []
+        for _, row in df.iterrows():
             concept_name = row.get('name', '')
             concept_code = row.get('code', '')
-            
-            # 获取板块行情
-            try:
-                end_date = datetime.now().strftime("%Y%m%d")
-                start_date = (datetime.now() - timedelta(days=5)).strftime("%Y%m%d")
-                daily_df = TUSHARE_PRO.concept_daily(concept_code=concept_code, 
-                                                      start_date=start_date, 
-                                                      end_date=end_date)
-                if daily_df is not None and not daily_df.empty:
-                    avg_pct = daily_df['pct_chg'].mean()
-                else:
-                    avg_pct = 0
-            except Exception as e:
-                st.write(f"⚠️ 获取板块行情失败 {concept_name}: {e}")
-                avg_pct = 0
+            # concept 接口有 pct_change 字段吗？检查一下
+            pct_chg = row.get('pct_change', 0) if 'pct_change' in df.columns else 0
             
             hot_concepts.append({
                 "name": concept_name,
                 "code": concept_code,
-                "pct_chg": round(avg_pct, 2)
+                "pct_chg": round(pct_chg, 2) if pct_chg else 0
             })
-        
-        st.write(f"📊 处理完成，共 {len(hot_concepts)} 个板块")
         
         # 按涨跌幅排序
         hot_concepts.sort(key=lambda x: x.get('pct_chg', 0), reverse=True)
         result = hot_concepts[:limit]
-        st.write(f"✅ 返回前 {len(result)} 个热门板块")
         
+        st.write(f"✅ 返回前 {len(result)} 个热门板块")
         return result
         
     except Exception as e:
         st.write(f"❌ 获取热门板块失败: {e}")
-        print(f"获取热门板块失败: {e}")
         return []
 
 
