@@ -8,6 +8,9 @@ AI量化股票系统 - 完整版本 v4.0
 - 用户自定义板块管理
 - 回测参数保存到用户设置
 - 清理调试代码
+- 各模块独立权重配置（右上角自动保存）
+- 市场简报增加上证指数技术指标
+- 实操信号模块新增实操池增删功能
 
 部署方式：
 1. 将代码上传到GitHub
@@ -731,6 +734,7 @@ print("=" * 60)
 # - Stripe 支付函数
 # - 删除所有调试代码（st.error）
 # - 添加板块操作函数（获取用户板块、保存板块等）
+# - 新增实操池操作函数（add_to_live_pool, remove_from_live_pool, get_live_pool）
 # ============================================================
 
 import time
@@ -1195,6 +1199,8 @@ def remove_from_backtest_pool(user_id: str, stock_code: str, access_token: str =
         return False, f"删除失败: {str(e)}"
 
 
+# ==================== 实操池操作函数（新增） ====================
+
 def get_live_pool(user_id: str, access_token: str = None) -> List[Dict]:
     """获取用户的实操股票池"""
     if not user_id or user_id == "admin":
@@ -1214,6 +1220,120 @@ def get_live_pool(user_id: str, access_token: str = None) -> List[Dict]:
         print(f"获取实操池失败: {e}")
         return []
 
+
+def add_to_live_pool(user_id: str, stock_code: str, stock_name: str, 
+                     shares: int = 0, avg_cost: float = 0, 
+                     access_token: str = None) -> tuple:
+    """
+    添加股票到实操池
+    参数:
+        user_id: 用户ID
+        stock_code: 股票代码
+        stock_name: 股票名称
+        shares: 持仓股数
+        avg_cost: 平均成本价
+    返回: (success, message)
+    """
+    if not user_id or user_id == "admin":
+        return False, "无效用户"
+    
+    # 检查是否已存在
+    stocks = get_live_pool(user_id, access_token)
+    for s in stocks:
+        if s.get("stock_code") == stock_code:
+            return False, f"{stock_code} 已在实操池中"
+    
+    try:
+        data = {
+            "user_id": user_id,
+            "stock_code": stock_code,
+            "stock_name": stock_name,
+            "shares": shares,
+            "avg_cost": avg_cost,
+            "current_price": 0,  # 后续刷新时更新
+            "added_time": datetime.now().isoformat(),
+            "added_date": datetime.now().date().isoformat(),
+            "updated_time": datetime.now().isoformat()
+        }
+        response = supabase_request("POST", "live_pool", data, access_token=access_token)
+        if response.status_code in [200, 201]:
+            return True, f"成功添加 {stock_code} ({stock_name}) 到实操池"
+        return False, f"添加失败: {response.text}"
+    except Exception as e:
+        return False, f"添加失败: {str(e)}"
+
+
+def update_live_pool_stock(user_id: str, stock_code: str, shares: int = None, 
+                           avg_cost: float = None, access_token: str = None) -> tuple:
+    """更新实操池中股票的持仓信息"""
+    try:
+        update_data = {}
+        if shares is not None:
+            update_data["shares"] = shares
+        if avg_cost is not None:
+            update_data["avg_cost"] = avg_cost
+        update_data["updated_time"] = datetime.now().isoformat()
+        
+        if not update_data:
+            return False, "无更新内容"
+        
+        response = supabase_request(
+            "PATCH",
+            "live_pool",
+            data=update_data,
+            params=f"user_id=eq.{user_id}&stock_code=eq.{stock_code}",
+            access_token=access_token
+        )
+        if response.status_code in [200, 204]:
+            return True, f"已更新 {stock_code}"
+        return False, f"更新失败: {response.text}"
+    except Exception as e:
+        return False, f"更新失败: {str(e)}"
+
+
+def remove_from_live_pool(user_id: str, stock_code: str, access_token: str = None) -> tuple:
+    """从实操池删除股票"""
+    try:
+        response = supabase_request(
+            "DELETE", 
+            "live_pool",
+            params=f"user_id=eq.{user_id}&stock_code=eq.{stock_code}",
+            access_token=access_token
+        )
+        if response.status_code in [200, 204]:
+            return True, f"已从实操池删除 {stock_code}"
+        return False, f"删除失败: {response.text}"
+    except Exception as e:
+        return False, f"删除失败: {str(e)}"
+
+
+def refresh_live_pool_prices(user_id: str, access_token: str = None) -> tuple:
+    """刷新实操池中所有股票的当前价格"""
+    stocks = get_live_pool(user_id, access_token)
+    if not stocks:
+        return True, "实操池为空"
+    
+    updated_count = 0
+    for stock in stocks:
+        ts_code = stock.get("stock_code")
+        if ts_code:
+            df = get_stock_daily(ts_code, days=1)
+            if not df.empty:
+                current_price = df['close'].iloc[-1]
+                response = supabase_request(
+                    "PATCH",
+                    "live_pool",
+                    data={"current_price": current_price, "updated_time": datetime.now().isoformat()},
+                    params=f"user_id=eq.{user_id}&stock_code=eq.{ts_code}",
+                    access_token=access_token
+                )
+                if response.status_code in [200, 204]:
+                    updated_count += 1
+    
+    return True, f"已刷新 {updated_count} 只股票的价格"
+
+
+# ==================== 自动推荐Top10（保留） ====================
 
 def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
     """自动推荐Top10股票（基于技术指标评分）"""
@@ -1263,6 +1383,7 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
         st.write(f"   添加 {stock['code']}: {success} - {msg}")
     
     return top10
+
 
 # ==================== 板块操作函数 ====================
 
@@ -1433,6 +1554,7 @@ def handle_stripe_callback():
                 except Exception as e:
                     st.error(f"验证失败: {e}")
 
+
 # ==================== 数据解析函数 ====================
 
 def parse_stock_code(code: str) -> Tuple[str, str]:
@@ -1501,6 +1623,7 @@ def validate_stock_code(code: str) -> Tuple[bool, str]:
     else:
         return False, f"无法识别股票代码: {code}，请检查后重试"
 
+
 # ==================== 登录/注册UI组件 ====================
 
 def render_login_form():
@@ -1523,8 +1646,7 @@ def render_login_form():
                         if success:
                             st.session_state.authenticated = True
                             st.session_state.user_id = user_id
-                            st.session_state.user_email = user_email
-                            st.session_state.access_token = access_token
+                            st.session_state.user_email = user_email                            st.session_state.access_token = access_token
                             st.session_state.refresh_token = refresh_token
                             st.session_state.token_expiry = time.time() + 3600
                             st.session_state.show_paywall = False
@@ -1608,7 +1730,7 @@ def render_admin_login_form():
             st.rerun()
 
 
-print("第2部分加载完成（已删除调试代码，添加板块操作函数）")
+print("第2部分加载完成（已添加实操池操作函数）")
 print("=" * 60)
 # ============================================================
 # ============================================================
@@ -2354,6 +2476,8 @@ def show_paywall():
         st.session_state.show_paywall = False
         st.session_state.payment_url = None
         st.rerun()
+
+
 # ==================== 真实回测函数（修复日期比较错误） ====================
 
 def calculate_annual_return(total_return: float, days: int) -> float:
@@ -2739,20 +2863,225 @@ print("=" * 60)
 # - 回测池无论是否有股票都显示区域
 # - 新增板块管理界面（Tab：我的板块、系统板块、市场热点）
 # - 回测参数支持用户保存和重置
+# - 新增各模块独立权重配置（右上角自动保存）
+# - 市场简报增加上证指数技术指标
+# - 实操信号模块新增实操池增删功能 + 独立权重配置
 # ============================================================
+
+# ==================== 模块权重管理辅助函数 ====================
+
+# 定义5个模块的权重键名
+MODULE_WEIGHT_KEYS = {
+    "market_brief": "weights_market_brief",      # 市场简报权重
+    "recommended": "weights_recommended",         # 推荐股票池权重
+    "stock_analysis": "weights_stock_analysis",   # 个股分析权重
+    "backtest": "weights_backtest",               # 回测功能权重
+    "live_signals": "weights_live_signals"        # 实操信号权重
+}
+
+def get_module_weights(module_name: str) -> Dict:
+    """
+    获取指定模块的权重配置
+    如果模块没有独立配置，则返回默认权重
+    """
+    key = MODULE_WEIGHT_KEYS.get(module_name)
+    if not key:
+        return TECH_WEIGHTS.copy()
+    
+    weights = st.session_state.get(key)
+    if weights is None:
+        # 初始化：从用户回测设置复制（个股分析用）或使用默认值
+        if module_name == "stock_analysis":
+            # 个股分析优先使用用户保存的回测参数中的权重
+            user_settings = get_user_backtest_settings(
+                st.session_state.user_id, 
+                st.session_state.get("access_token")
+            )
+            weights = user_settings.get("tech_weights", TECH_WEIGHTS.copy())
+        else:
+            weights = TECH_WEIGHTS.copy()
+        st.session_state[key] = weights
+    
+    # 确保所有权重键都存在
+    for key_name in TECH_WEIGHTS.keys():
+        if key_name not in weights:
+            weights[key_name] = TECH_WEIGHTS[key_name]
+    
+    return weights
+
+
+def save_module_weights(module_name: str, weights: Dict):
+    """
+    保存指定模块的权重配置（自动触发）
+    """
+    key = MODULE_WEIGHT_KEYS.get(module_name)
+    if key:
+        st.session_state[key] = weights.copy()
+
+
+def render_weight_config_popover(module_name: str, target_module_title: str):
+    """
+    渲染权重配置弹出框（放在每个模块的右上角）
+    module_name: 模块标识（market_brief, recommended, stock_analysis, backtest, live_signals）
+    target_module_title: 显示的目标模块标题
+    """
+    # 获取当前模块的权重
+    current_weights = get_module_weights(module_name)
+    
+    # 使用 popover 显示权重配置
+    with st.popover("⚙️ 权重配置", use_container_width=False):
+        st.markdown(f"**{target_module_title} - 技术指标权重**")
+        st.caption("调整各技术指标的权重（自动保存）")
+        
+        col1, col2 = st.columns(2)
+        
+        # 获取当前权重值（转换为百分比显示）
+        macd_pct = current_weights.get("macd", 0.25) * 100
+        kdj_pct = current_weights.get("kdj", 0.20) * 100
+        boll_pct = current_weights.get("boll", 0.20) * 100
+        rsi_pct = current_weights.get("rsi", 0.15) * 100
+        vp_pct = current_weights.get("volume_price", 0.20) * 100
+        
+        with col1:
+            new_macd = st.slider("MACD权重", 0, 50, value=int(macd_pct), step=5, key=f"{module_name}_macd")
+            new_kdj = st.slider("KDJ权重", 0, 50, value=int(kdj_pct), step=5, key=f"{module_name}_kdj")
+            new_boll = st.slider("布林带权重", 0, 50, value=int(boll_pct), step=5, key=f"{module_name}_boll")
+        
+        with col2:
+            new_rsi = st.slider("RSI权重", 0, 50, value=int(rsi_pct), step=5, key=f"{module_name}_rsi")
+            new_vp = st.slider("量价配合权重", 0, 50, value=int(vp_pct), step=5, key=f"{module_name}_vp")
+        
+        # 归一化权重
+        total = new_macd + new_kdj + new_boll + new_rsi + new_vp
+        if total > 0:
+            new_weights = {
+                "macd": new_macd / total,
+                "kdj": new_kdj / total,
+                "boll": new_boll / total,
+                "rsi": new_rsi / total,
+                "volume_price": new_vp / total
+            }
+            save_module_weights(module_name, new_weights)
+        
+        total_pct = sum(new_weights.values()) * 100
+        st.caption(f"当前权重总和: {total_pct:.0f}%")
+        
+        # 重置按钮
+        if st.button("重置为默认值", key=f"{module_name}_reset_weights", use_container_width=True):
+            save_module_weights(module_name, TECH_WEIGHTS.copy())
+            st.rerun()
+
+
+# ==================== 大盘指数技术指标函数 ====================
+
+def get_index_technical_indicators(index_code: str = "000001.SH") -> Dict:
+    """
+    获取大盘指数的技术指标
+    返回: {
+        "macd": {...}, "kdj": {...}, "boll": {...}, "rsi": {...},
+        "trend": "多头/空头/震荡",
+        "trend_score": 0-100,
+        "summary": "简要总结"
+    }
+    """
+    if not TUSHARE_AVAILABLE:
+        return {
+            "macd": {"signal_level": "neutral", "score": 50},
+            "kdj": {"signal_level": "neutral", "score": 50},
+            "boll": {"signal_level": "neutral", "score": 50},
+            "rsi": {"signal_level": "neutral", "score": 50},
+            "trend": "数据不可用",
+            "trend_score": 50,
+            "summary": "Tushare未连接，无法获取大盘指标"
+        }
+    
+    df = get_stock_daily(index_code, days=120)
+    if df.empty:
+        return {
+            "macd": {"signal_level": "neutral", "score": 50},
+            "kdj": {"signal_level": "neutral", "score": 50},
+            "boll": {"signal_level": "neutral", "score": 50},
+            "rsi": {"signal_level": "neutral", "score": 50},
+            "trend": "数据不足",
+            "trend_score": 50,
+            "summary": "无法获取上证指数数据"
+        }
+    
+    # 计算各技术指标
+    macd = calculate_macd(df)
+    kdj = calculate_kdj(df)
+    boll = calculate_bollinger_bands(df)
+    rsi = calculate_rsi(df)
+    
+    # 计算综合趋势得分
+    trend_score = (
+        macd["score"] * 0.30 +
+        kdj["score"] * 0.25 +
+        boll["score"] * 0.20 +
+        rsi["score"] * 0.25
+    )
+    
+    # 判断趋势
+    if trend_score >= 70:
+        trend = "多头趋势 ↑"
+        trend_color = "🟢"
+    elif trend_score >= 55:
+        trend = "震荡偏多 ↗"
+        trend_color = "🟡"
+    elif trend_score >= 40:
+        trend = "震荡偏空 ↘"
+        trend_color = "🟠"
+    else:
+        trend = "空头趋势 ↓"
+        trend_color = "🔴"
+    
+    # 生成简要总结
+    signals = []
+    if macd["signal_level"] in ["golden_cross", "bullish"]:
+        signals.append("MACD偏多")
+    elif macd["signal_level"] in ["death_cross", "bearish"]:
+        signals.append("MACD偏空")
+    
+    if kdj["signal_level"] in ["oversold_golden", "bullish"]:
+        signals.append("KDJ金叉")
+    elif kdj["signal_level"] in ["overbought_death", "bearish"]:
+        signals.append("KDJ死叉")
+    
+    if rsi["rsi"] > 70:
+        signals.append("RSI超买")
+    elif rsi["rsi"] < 30:
+        signals.append("RSI超卖")
+    
+    summary = f"{trend_color} {trend} | " + (" | ".join(signals) if signals else "指标中性")
+    
+    return {
+        "macd": macd,
+        "kdj": kdj,
+        "boll": boll,
+        "rsi": rsi,
+        "trend": trend,
+        "trend_score": round(trend_score, 1),
+        "summary": summary,
+        "index_code": index_code,
+        "index_name": "上证指数"
+    }
+
 
 # ==================== 模块1：市场简报 ====================
 
 def render_market_brief():
-    """市场简报模块"""
+    """市场简报模块（增加上证指数技术指标 + 独立权重配置）"""
     st.markdown(f"### {t()['module1_title']}")
+    
+    # 右上角：权重配置 + 刷新按钮
+    col_title, col_refresh, col_weight = st.columns([6, 1, 1])
+    with col_weight:
+        render_weight_config_popover("market_brief", "市场简报")
+    with col_refresh:
+        refresh = st.button(t()["refresh"], key="refresh_brief", use_container_width=True)
     
     last_update = get_last_update_time("market_brief")
     st.caption(f"📅 最后更新: {last_update}")
-    
-    col1, col2 = st.columns([4, 1])
-    with col2:
-        refresh = st.button(t()["refresh"], key="refresh_brief", use_container_width=True)
     
     if refresh:
         if not consume_free_trial(st.session_state.user_id, st.session_state.get("access_token")):
@@ -2764,13 +3093,41 @@ def render_market_brief():
         st.rerun()
     
     with st.spinner("正在获取市场数据..."):
+        # ===== 上证指数技术指标（新增） =====
+        st.markdown("**📈 大盘技术分析（上证指数）**")
+        index_indicators = get_index_technical_indicators("000001.SH")
+        
+        # 显示技术指标卡片
+        col1, col2, col3, col4, col5 = st.columns(5)
+        with col1:
+            st.metric("趋势判断", index_indicators["trend"], delta=f"得分 {index_indicators['trend_score']:.0f}")
+        with col2:
+            macd_status = "金叉" if index_indicators["macd"]["signal_level"] == "golden_cross" else \
+                          "死叉" if index_indicators["macd"]["signal_level"] == "death_cross" else \
+                          "多头" if index_indicators["macd"]["signal_level"] == "bullish" else \
+                          "空头" if index_indicators["macd"]["signal_level"] == "bearish" else "中性"
+            st.metric("MACD", macd_status, delta=f"{index_indicators['macd']['score']:.0f}分")
+        with col3:
+            kdj_status = f"K:{index_indicators['kdj']['k']:.0f}/D:{index_indicators['kdj']['d']:.0f}"
+            st.metric("KDJ", kdj_status, delta=f"{index_indicators['kdj']['score']:.0f}分")
+        with col4:
+            st.metric("RSI", f"{index_indicators['rsi']['rsi']:.0f}", 
+                     delta="超买" if index_indicators['rsi']['rsi'] > 70 else "超卖" if index_indicators['rsi']['rsi'] < 30 else "正常")
+        with col5:
+            boll_pos = "上轨" if index_indicators['boll']['position'] > 0.7 else \
+                       "下轨" if index_indicators['boll']['position'] < 0.3 else "中轨"
+            st.metric("布林带", boll_pos, delta=f"{index_indicators['boll']['score']:.0f}分")
+        
+        st.caption(f"📝 {index_indicators['summary']}")
+        st.markdown("---")
+        
         # 使用缓存获取板块表现
         sector_df = get_cached_sector_performance()
         
-        market_trend = "震荡上行"
-        market_desc = "近期市场情绪偏暖，科技板块持续活跃，建议关注热点板块轮动机会。"
+        market_trend = index_indicators["trend"].replace("↑", "").replace("↗", "").replace("↘", "").replace("↓", "").strip()
+        market_desc = f"上证指数{market_trend}，{index_indicators['summary']}。科技板块持续活跃，建议关注热点板块轮动机会。"
         
-        st.info(f"📈 **大盘趋势**: {market_trend}\n\n📝 **市场解读**: {market_desc}")
+        st.info(f"📈 **大盘趋势**: {index_indicators['trend']}\n\n📝 **市场解读**: {market_desc}")
         
         if not sector_df.empty:
             st.markdown("**🔥 今日热点板块**")
@@ -2792,173 +3149,16 @@ def render_market_brief():
         st.caption("• 光模块/CPO: 中际旭创、天孚通信、新易盛\n• 人工智能: 科大讯飞、海康威视\n• 半导体: 中芯国际、北方华创\n• 机器人: 汇川技术、埃斯顿")
 
 
-# ==================== 模块1.5：板块管理 ====================
-
-def render_sector_management():
-    """板块管理页面"""
-    st.markdown("### 📁 板块管理")
-    
-    # Tab切换
-    tab1, tab2, tab3 = st.tabs(["我的板块", "系统板块", "市场热点"])
-    
-    # ===== Tab1: 用户自定义板块 =====
-    with tab1:
-        st.markdown("#### ➕ 添加自定义板块")
-        
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            new_sector_name = st.text_input("板块名称", placeholder="如: 光模块", key="new_sector_name")
-        with col2:
-            if st.button("创建板块", key="create_sector_btn"):
-                if new_sector_name:
-                    # 跳转到添加股票页面（使用session_state）
-                    st.session_state.show_add_stocks_to_sector = True
-                    st.session_state.new_sector_name = new_sector_name
-                    st.rerun()
-        
-        # 添加股票到板块的界面
-        if st.session_state.get("show_add_stocks_to_sector", False):
-            sector_name = st.session_state.get("new_sector_name", "")
-            st.markdown(f"**正在创建板块: {sector_name}**")
-            
-            stock_codes_input = st.text_area(
-                "输入股票代码（每行一个，或逗号分隔）",
-                placeholder="例如:\n300308.SZ\n300394.SZ\n300502.SZ",
-                height=150,
-                key="sector_stocks_input"
-            )
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("确认创建", key="confirm_create_sector"):
-                    if stock_codes_input:
-                        # 解析股票代码
-                        codes = []
-                        names = []
-                        for line in stock_codes_input.replace(',', '\n').split('\n'):
-                            code = line.strip().upper()
-                            if code and (code.endswith('.SZ') or code.endswith('.SH')):
-                                codes.append(code)
-                                names.append(get_stock_name_from_tushare(code))
-                        
-                        if codes:
-                            success, msg = add_user_sector(
-                                st.session_state.user_id,
-                                sector_name,
-                                codes,
-                                names,
-                                st.session_state.get("access_token")
-                            )
-                            if success:
-                                st.success(msg)
-                                st.session_state.show_add_stocks_to_sector = False
-                                st.session_state.new_sector_name = ""
-                                st.rerun()
-                            else:
-                                st.error(msg)
-                        else:
-                            st.error("请至少输入一个有效的股票代码")
-                    else:
-                        st.error("请至少输入一个股票代码")
-            
-            with col2:
-                if st.button("取消", key="cancel_create_sector"):
-                    st.session_state.show_add_stocks_to_sector = False
-                    st.session_state.new_sector_name = ""
-                    st.rerun()
-        
-        # 显示已有自定义板块
-        st.markdown("#### 📂 我的板块")
-        user_sectors = get_user_sectors(st.session_state.user_id, st.session_state.get("access_token"))
-        
-        if not user_sectors:
-            st.info("暂无自定义板块，点击上方创建")
-        else:
-            for sector in user_sectors:
-                with st.expander(f"📂 {sector['sector_name']}"):
-                    stock_codes = sector.get('stock_codes', [])
-                    stock_names = sector.get('stock_names', [])
-                    
-                    if stock_codes:
-                        df = pd.DataFrame({
-                            "股票代码": stock_codes,
-                            "股票名称": stock_names if stock_names else [get_stock_name_from_tushare(c) for c in stock_codes]
-                        })
-                        st.dataframe(df, use_container_width=True, hide_index=True)
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("编辑", key=f"edit_sector_{sector['id']}"):
-                            st.info("编辑功能开发中")
-                    with col2:
-                        if st.button("删除", key=f"del_sector_{sector['id']}"):
-                            success, msg = delete_user_sector(
-                                st.session_state.user_id,
-                                sector['id'],
-                                st.session_state.get("access_token")
-                            )
-                            if success:
-                                st.success(msg)
-                                st.rerun()
-                            else:
-                                st.error(msg)
-    
-    # ===== Tab2: 系统预置板块 =====
-    with tab2:
-        st.markdown("#### 📋 系统预置板块")
-        st.caption("以下为系统预置的热点板块，用于市场简报和推荐股票池")
-        
-        for sector_name, sector_info in HOT_SECTORS.items():
-            with st.expander(f"📂 {sector_name}"):
-                df = pd.DataFrame({
-                    "股票代码": sector_info["stocks"],
-                    "股票名称": sector_info["names"]
-                })
-                st.dataframe(df, use_container_width=True, hide_index=True)
-    
-    # ===== Tab3: Tushare市场热点 =====
-    with tab3:
-        st.markdown("#### 🔥 今日市场热点（Tushare）")
-        
-        if TUSHARE_INTEGRAL >= 2000:
-            col1, col2 = st.columns([3, 1])
-            with col2:
-                if st.button("刷新热点", key="refresh_hot_sectors"):
-                    with st.spinner("正在同步热点板块..."):
-                        success, msg = sync_hot_sectors_to_db()
-                        if success:
-                            st.success(msg)
-                            st.rerun()
-                        else:
-                            st.error(msg)
-            
-            # 从缓存加载热点板块
-            sectors = load_sector_cache()
-            tushare_sectors = [s for s in sectors if s.get("source") == "tushare"]
-            
-            if tushare_sectors:
-                for sector in tushare_sectors[:10]:
-                    st.markdown(f"- **{sector.get('sector_name')}** (热度: {sector.get('hot_score', 50)}分)")
-            else:
-                st.info("暂无热点数据，点击刷新获取")
-                if st.button("立即同步", key="sync_hot_now"):
-                    with st.spinner("正在同步..."):
-                        success, msg = sync_hot_sectors_to_db()
-                        if success:
-                            st.success(msg)
-                            st.rerun()
-                        else:
-                            st.error(msg)
-        else:
-            st.warning(f"Tushare积分不足（当前{TUSHARE_INTEGRAL}分，需要2000分），无法获取市场热点")
-            st.info("升级Tushare积分后可获取实时市场热点板块")
-
-
 # ==================== 模块2：推荐股票池 ====================
 
 def render_recommended_pool():
-    """推荐股票池模块"""
+    """推荐股票池模块（独立权重配置）"""
     st.markdown(f"### {t()['module2_title']}")
+    
+    # 右上角：权重配置
+    col_title, col_weight = st.columns([6, 1])
+    with col_weight:
+        render_weight_config_popover("recommended", "推荐股票池")
     
     last_update = get_last_update_time("recommended_pool")
     st.caption(f"📅 最后更新: {last_update} | 📌 最多{MAX_RECOMMENDED_STOCKS}只股票 | 点击[分析]可查看详细评分")
@@ -3038,13 +3238,12 @@ def render_recommended_pool():
         st.info("暂无股票，请点击[添加]按钮添加股票，或点击[刷新]获取AI推荐")
         return
     
-    # 获取用户技术指标权重
-    user_settings = get_user_backtest_settings(st.session_state.user_id, st.session_state.get("access_token"))
-    tech_weights = user_settings.get("tech_weights", TECH_WEIGHTS)
+    # 获取推荐股票池模块的独立权重
+    module_weights = get_module_weights("recommended")
     
     with st.spinner("正在计算股票评分..."):
         stock_list = [{"code": s["stock_code"], "name": s.get("stock_name", "")} for s in stocks]
-        scored_stocks = score_batch_stocks(stock_list, tech_weights)
+        scored_stocks = score_batch_stocks(stock_list, module_weights)
     
     for idx, stock in enumerate(scored_stocks):
         with st.container(border=True):
@@ -3113,8 +3312,13 @@ def render_recommended_pool():
 # ==================== 模块3：个股分析 ====================
 
 def render_stock_analysis():
-    """个股分析模块（K线图连续显示版）"""
+    """个股分析模块（K线图连续显示版 + 独立权重配置）"""
     st.markdown(f"### {t()['module3_title']}")
+    
+    # 右上角：权重配置
+    col_title, col_weight = st.columns([6, 1])
+    with col_weight:
+        render_weight_config_popover("stock_analysis", "个股分析")
     
     last_update = get_last_update_time("stock_analysis")
     st.caption(f"📅 最后更新: {last_update}")
@@ -3147,16 +3351,15 @@ def render_stock_analysis():
         stock_code = st.session_state.analyze_code
         stock_name = st.session_state.get("analyze_name", "")
         
-        # 获取用户技术指标权重
-        user_settings = get_user_backtest_settings(st.session_state.user_id, st.session_state.get("access_token"))
-        tech_weights = user_settings.get("tech_weights", TECH_WEIGHTS)
+        # 获取个股分析模块的独立权重
+        module_weights = get_module_weights("stock_analysis")
         
         with st.spinner("正在分析..."):
             score_result = get_cached_stock_score(stock_code, stock_name)
-            # 重新计算得分（使用用户权重）
+            # 重新计算得分（使用模块独立权重）
             df = get_cached_stock_data(stock_code, days=60)
             if not df.empty:
-                tech_result = calculate_technical_score(df, tech_weights)
+                tech_result = calculate_technical_score(df, module_weights)
                 score_result["total_score"] = tech_result["score"]
                 score_result["level"] = tech_result["level"]
                 for lvl, config in SIGNAL_LEVELS.items():
@@ -3306,8 +3509,13 @@ def render_stock_analysis():
 # ==================== 模块4：回测功能 ====================
 
 def render_backtest():
-    """回测功能模块（天数选择版 + 参数保存）"""
+    """回测功能模块（天数选择版 + 参数保存 + 独立权重配置）"""
     st.markdown(f"### {t()['module4_title']}")
+    
+    # 右上角：权重配置（统一到模块右上角）
+    col_title, col_weight = st.columns([6, 1])
+    with col_weight:
+        render_weight_config_popover("backtest", "回测功能")
     
     last_update = get_last_update_time("backtest")
     st.caption(f"📅 最后更新: {last_update}")
@@ -3372,7 +3580,6 @@ def render_backtest():
     # 使用session_state保存临时修改的参数
     if "temp_backtest_params" not in st.session_state:
         st.session_state.temp_backtest_params = {
-            "tech_weights": user_backtest_settings.get("tech_weights", TECH_WEIGHTS.copy()),
             "buy_threshold": user_backtest_settings.get("buy_threshold", 70),
             "sell_threshold": user_backtest_settings.get("sell_threshold", 40),
             "position_pct": user_backtest_settings.get("position_pct", 100),
@@ -3380,43 +3587,6 @@ def render_backtest():
             "backtest_days": user_backtest_settings.get("backtest_days", 365),
             "max_hold_days": user_backtest_settings.get("max_hold_days", 0)
         }
-    
-    # 技术指标权重配置
-    with st.expander("📊 技术指标权重配置", expanded=False):
-        st.caption("调整各技术指标的权重（总和应为100%）")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            macd_w = st.slider("MACD权重", 0, 50, 
-                               value=int(st.session_state.temp_backtest_params["tech_weights"].get("macd", 25) * 100),
-                               step=5, key="tech_macd")
-            kdj_w = st.slider("KDJ权重", 0, 50,
-                              value=int(st.session_state.temp_backtest_params["tech_weights"].get("kdj", 20) * 100),
-                              step=5, key="tech_kdj")
-            boll_w = st.slider("布林带权重", 0, 50,
-                               value=int(st.session_state.temp_backtest_params["tech_weights"].get("boll", 20) * 100),
-                               step=5, key="tech_boll")
-        with col2:
-            rsi_w = st.slider("RSI权重", 0, 50,
-                              value=int(st.session_state.temp_backtest_params["tech_weights"].get("rsi", 15) * 100),
-                              step=5, key="tech_rsi")
-            vp_w = st.slider("量价配合权重", 0, 50,
-                             value=int(st.session_state.temp_backtest_params["tech_weights"].get("volume_price", 20) * 100),
-                             step=5, key="tech_vp")
-        
-        # 归一化权重
-        total = macd_w + kdj_w + boll_w + rsi_w + vp_w
-        if total > 0:
-            st.session_state.temp_backtest_params["tech_weights"] = {
-                "macd": macd_w / total,
-                "kdj": kdj_w / total,
-                "boll": boll_w / total,
-                "rsi": rsi_w / total,
-                "volume_price": vp_w / total
-            }
-        
-        total_pct = sum(st.session_state.temp_backtest_params["tech_weights"].values()) * 100
-        st.caption(f"当前权重总和: {total_pct:.0f}%")
     
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -3491,12 +3661,12 @@ def render_backtest():
         )
         st.session_state.temp_backtest_params["max_hold_days"] = max_hold_days
     
-    # 参数操作按钮
-    col1, col2, col3 = st.columns(3)
+    # 参数操作按钮（只保留保存和重置，权重配置已移到右上角）
+    col1, col2 = st.columns(2)
     with col1:
         if st.button("💾 保存参数", key="save_backtest_params", use_container_width=True):
             save_data = {
-                "tech_weights": st.session_state.temp_backtest_params["tech_weights"],
+                "tech_weights": get_module_weights("backtest"),  # 使用模块权重
                 "buy_threshold": st.session_state.temp_backtest_params["buy_threshold"],
                 "sell_threshold": st.session_state.temp_backtest_params["sell_threshold"],
                 "position_pct": st.session_state.temp_backtest_params["position_pct"],
@@ -3513,8 +3683,9 @@ def render_backtest():
     with col2:
         if st.button("🔄 重置默认", key="reset_backtest_params", use_container_width=True):
             if reset_user_backtest_settings(st.session_state.user_id, st.session_state.get("access_token")):
+                # 同时重置模块权重
+                save_module_weights("backtest", TECH_WEIGHTS.copy())
                 st.session_state.temp_backtest_params = {
-                    "tech_weights": TECH_WEIGHTS.copy(),
                     "buy_threshold": 70,
                     "sell_threshold": 40,
                     "position_pct": 100,
@@ -3547,6 +3718,9 @@ def render_backtest():
         with st.spinner("正在运行回测，请稍候..."):
             stock_codes = [s["stock_code"] for s in stocks]
             
+            # 获取回测模块的独立权重
+            backtest_weights = get_module_weights("backtest")
+            
             result = run_real_backtest(
                 stock_codes=stock_codes,
                 start_date=start_date,
@@ -3556,7 +3730,7 @@ def render_backtest():
                 sell_threshold=st.session_state.temp_backtest_params["sell_threshold"],
                 position_pct=st.session_state.temp_backtest_params["position_pct"],
                 max_positions=st.session_state.temp_backtest_params["max_positions"],
-                tech_weights=st.session_state.temp_backtest_params["tech_weights"],
+                tech_weights=backtest_weights,
                 max_hold_days=st.session_state.temp_backtest_params["max_hold_days"]
             )
             
@@ -3666,7 +3840,6 @@ def render_backtest():
         
         # 回测参数摘要
         with st.expander("⚙️ 回测参数摘要"):
-            tech_w = st.session_state.temp_backtest_params["tech_weights"]
             st.markdown(f"""
             - **回测周期**: {st.session_state.temp_backtest_params['backtest_days']}天
             - **初始资金**: ¥{initial_capital:,.0f}
@@ -3675,11 +3848,6 @@ def render_backtest():
             - **单笔仓位**: {st.session_state.temp_backtest_params['position_pct']}%
             - **最大持仓**: {st.session_state.temp_backtest_params['max_positions']}只
             - **最大持仓天数**: {st.session_state.temp_backtest_params['max_hold_days']}天
-            - **MACD权重**: {tech_w.get('macd', 0.25)*100:.0f}%
-            - **KDJ权重**: {tech_w.get('kdj', 0.20)*100:.0f}%
-            - **布林带权重**: {tech_w.get('boll', 0.20)*100:.0f}%
-            - **RSI权重**: {tech_w.get('rsi', 0.15)*100:.0f}%
-            - **量价配合权重**: {tech_w.get('volume_price', 0.20)*100:.0f}%
             - **交易天数**: {result.get('days', 0)}天
             - **买入次数**: {result.get('buy_trades', 0)}次
             - **卖出次数**: {result.get('sell_trades', 0)}次
@@ -3727,100 +3895,233 @@ def place_gm_order(stock_code: str, volume: int, price: float, side: str = "buy"
         return False, f"下单失败: {str(e)}"
 
 
-# ==================== 模块5：实操信号 + 掘金下单 ====================
+# ==================== 模块5：实操信号 + 掘金下单 + 实操池管理 ====================
 
 def render_live_signals():
-    """实操信号模块 + 掘金一键下单"""
+    """实操信号模块 + 掘金一键下单 + 实操池管理 + 独立权重配置"""
     st.markdown(f"### {t()['module5_title']}")
     
-    last_update = get_last_update_time("live_signals")
-    st.caption(f"📅 最后更新: {last_update} | 💡 AI生成交易信号，掘金一键下单")
-    
-    col1, col2 = st.columns([4, 1])
-    with col2:
+    # 右上角：权重配置 + 刷新按钮
+    col_title, col_refresh, col_weight = st.columns([6, 1, 1])
+    with col_weight:
+        render_weight_config_popover("live_signals", "实操信号")
+    with col_refresh:
         if st.button(t()["refresh"], key="refresh_signals", use_container_width=True):
             if not consume_free_trial(st.session_state.user_id, st.session_state.get("access_token")):
                 st.warning("免费次数已用完，请升级到专业版")
             else:
+                # 刷新实操池价格
+                refresh_live_pool_prices(st.session_state.user_id, st.session_state.get("access_token"))
                 update_last_update_time("live_signals")
                 st.rerun()
     
-    recommended_stocks = get_recommended_pool(st.session_state.user_id, st.session_state.get("access_token"))
+    last_update = get_last_update_time("live_signals")
+    st.caption(f"📅 最后更新: {last_update} | 💡 AI生成交易信号，掘金一键下单")
+    
+    # 获取各模块权重（实操信号独立权重）
+    live_weights = get_module_weights("live_signals")
+    
+    # ===== 实操池管理（新增） =====
+    st.markdown("**📋 我的实操池**")
+    
+    # 添加股票到实操池
+    col1, col2, col3, col4 = st.columns([2, 1, 1, 2])
+    with col1:
+        add_live_stock = st.text_input(
+            "股票代码", 
+            placeholder="如: 000001.SZ", 
+            key="add_live_input", 
+            label_visibility="collapsed"
+        )
+    with col2:
+        shares_input = st.number_input("股数", min_value=0, value=100, step=100, key="live_shares", label_visibility="collapsed")
+    with col3:
+        price_input = st.number_input("成本价", min_value=0.0, value=0.0, step=0.5, key="live_price", label_visibility="collapsed")
+    with col4:
+        if st.button("➕ 添加到实操池", key="add_live_btn", use_container_width=True):
+            if add_live_stock:
+                is_valid, formatted = validate_stock_code(add_live_stock)
+                if is_valid:
+                    stock_name = get_stock_name_from_tushare(formatted)
+                    success, msg = add_to_live_pool(
+                        st.session_state.user_id, formatted, stock_name,
+                        shares=int(shares_input), avg_cost=float(price_input),
+                        access_token=st.session_state.get("access_token")
+                    )
+                    if success:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+                else:
+                    st.error(formatted)
+    
+    # 获取实操池股票
     live_stocks = get_live_pool(st.session_state.user_id, st.session_state.get("access_token"))
+    
+    # 显示实操池
+    if live_stocks:
+        # 刷新当前价格
+        for stock in live_stocks:
+            ts_code = stock.get("stock_code")
+            if ts_code:
+                df = get_stock_daily(ts_code, days=1)
+                if not df.empty:
+                    stock["current_price"] = df['close'].iloc[-1]
+        
+        # 显示实操池表格
+        live_df = []
+        for stock in live_stocks:
+            current_price = stock.get("current_price", 0)
+            avg_cost = stock.get("avg_cost", 0)
+            shares = stock.get("shares", 0)
+            profit_pct = ((current_price - avg_cost) / avg_cost * 100) if avg_cost > 0 and current_price > 0 else 0
+            market_value = current_price * shares if current_price > 0 else 0
+            
+            live_df.append({
+                "股票代码": stock["stock_code"],
+                "股票名称": stock.get("stock_name", ""),
+                "持仓股数": shares,
+                "成本价": f"¥{avg_cost:.2f}" if avg_cost > 0 else "-",
+                "现价": f"¥{current_price:.2f}" if current_price > 0 else "-",
+                "盈亏": f"{profit_pct:+.1f}%" if avg_cost > 0 else "-",
+                "市值": f"¥{market_value:,.0f}" if market_value > 0 else "-"
+            })
+        
+        if live_df:
+            st.dataframe(pd.DataFrame(live_df), use_container_width=True, hide_index=True)
+        
+        # 删除实操池股票
+        for stock in live_stocks:
+            col1, col2, col3 = st.columns([3, 1, 1])
+            with col1:
+                st.caption(f"{stock['stock_code']} ({stock.get('stock_name', '')})")
+            with col2:
+                if st.button("编辑", key=f"edit_live_{stock['stock_code']}"):
+                    st.session_state.edit_live_stock = stock
+            with col3:
+                if st.button("删除", key=f"del_live_{stock['stock_code']}"):
+                    remove_from_live_pool(st.session_state.user_id, stock['stock_code'], st.session_state.get("access_token"))
+                    st.rerun()
+        
+        # 编辑持仓（简化版）
+        if st.session_state.get("edit_live_stock"):
+            edit_stock = st.session_state.edit_live_stock
+            st.markdown(f"**编辑 {edit_stock['stock_code']}**")
+            col1, col2 = st.columns(2)
+            with col1:
+                new_shares = st.number_input("股数", value=edit_stock.get("shares", 0), step=100, key="edit_shares")
+            with col2:
+                new_avg_cost = st.number_input("成本价", value=float(edit_stock.get("avg_cost", 0)), step=0.5, key="edit_avg_cost")
+            if st.button("保存修改", key="save_edit_live"):
+                update_live_pool_prices(st.session_state.user_id, edit_stock['stock_code'], new_shares, new_avg_cost, st.session_state.get("access_token"))
+                st.session_state.edit_live_stock = None
+                st.rerun()
+            if st.button("取消", key="cancel_edit_live"):
+                st.session_state.edit_live_stock = None
+                st.rerun()
+    else:
+        st.info("暂无实操股票，请上方添加")
+    
+    st.markdown("---")
+    
+    # ===== 交易信号生成 =====
+    st.markdown("**💡 今日交易信号**")
+    
+    # 获取推荐池股票（高分股票自动加入信号）
+    recommended_stocks = get_recommended_pool(st.session_state.user_id, st.session_state.get("access_token"))
     
     signals = []
     
-    for stock in recommended_stocks[:5]:
-        score_raw = stock.get('current_score', 0)
-        try:
-            score = float(score_raw) if score_raw else 0
-        except (ValueError, TypeError):
-            score = 0
-        
-        if score >= 70:
-            signals.append({
-                "stock_code": stock['stock_code'],
-                "stock_name": stock.get('stock_name', ''),
-                "score": score,
-                "action": "买入",
-                "suggested_position": "5-15%",
-                "confidence": f"{score:.0f}%"
-            })
+    # 从推荐池获取高分股票（使用实操信号模块的独立权重计算）
+    if recommended_stocks:
+        with st.spinner("正在计算信号..."):
+            for stock in recommended_stocks[:10]:  # 最多取10只
+                score_result = get_stock_score(stock['stock_code'], stock.get('stock_name', ''), live_weights)
+                score = score_result["total_score"]
+                
+                if score >= 70:
+                    signals.append({
+                        "stock_code": stock['stock_code'],
+                        "stock_name": stock.get('stock_name', ''),
+                        "score": score,
+                        "action": "买入",
+                        "suggested_position": "5-15%",
+                        "confidence": f"{score:.0f}%",
+                        "source": "推荐池"
+                    })
     
+    # 从实操池获取信号
     for stock in live_stocks:
-        current_price_raw = stock.get('current_price', 0)
-        avg_cost_raw = stock.get('avg_cost', 0)
-        try:
-            current_price = float(current_price_raw) if current_price_raw else 0
-            avg_cost = float(avg_cost_raw) if avg_cost_raw else 0
-        except (ValueError, TypeError):
-            current_price = 0
-            avg_cost = 0
+        current_price = stock.get("current_price", 0)
+        avg_cost = stock.get("avg_cost", 0)
         
         if avg_cost > 0 and current_price > 0:
             profit_pct = (current_price - avg_cost) / avg_cost * 100
             if profit_pct > 10:
                 action = "卖出(获利)"
+                action_color = "🟢"
             elif profit_pct < -8:
                 action = "止损⚠️"
+                action_color = "🔴"
             else:
                 action = "持有"
+                action_color = "⚪"
         else:
             action = "持有"
+            action_color = "⚪"
+        
+        # 使用实操信号模块权重计算当前得分
+        score_result = get_stock_score(stock['stock_code'], stock.get('stock_name', ''), live_weights)
         
         signals.append({
             "stock_code": stock['stock_code'],
             "stock_name": stock.get('stock_name', ''),
+            "score": score_result["total_score"],
             "action": action,
             "suggested_position": f"{stock.get('shares', 0)}股",
-            "confidence": ""
+            "confidence": f"{score_result['total_score']:.0f}%",
+            "source": "实操池",
+            "action_color": action_color
         })
     
     if not signals:
-        st.info("暂无交易信号，请先在推荐池添加高评分股票")
+        st.info("暂无交易信号，请先在推荐池添加高评分股票，或添加实操池股票")
         return
     
+    # 显示信号列表
     for idx, signal in enumerate(signals):
         with st.container(border=True):
-            col1, col2, col3, col4, col5 = st.columns([1.5, 1, 1.5, 1.5, 1.5])
+            col1, col2, col3, col4, col5, col6 = st.columns([1.5, 1, 1.5, 1.5, 1.5, 1])
             
             with col1:
                 st.markdown(f"**{signal['stock_code']}**")
                 st.caption(signal['stock_name'])
             
             with col2:
-                st.markdown(f"**{signal['action']}**")
+                score = signal.get('score', 0)
+                level = "S" if score >= 85 else "A" if score >= 70 else "B" if score >= 55 else "C" if score >= 40 else "D"
+                color = SIGNAL_LEVELS.get(level, {}).get("color", "#888888")
+                st.markdown(f"<h4 style='color:{color}; margin:0;'>{score:.0f}</h4>", unsafe_allow_html=True)
+                st.caption(f"{level}级")
             
             with col3:
-                st.caption(f"建议: {signal['suggested_position']}")
+                action_text = signal['action']
+                action_color = signal.get('action_color', "🟡")
+                st.markdown(f"**{action_color} {action_text}**")
             
             with col4:
+                st.caption(f"建议: {signal['suggested_position']}")
+            
+            with col5:
                 if signal.get('confidence'):
                     st.caption(f"置信度: {signal['confidence']}")
             
-            with col5:
+            with col6:
                 if signal['action'] in ["买入", "卖出(获利)"] and GM_AVAILABLE:
-                    price = 100.0
+                    # 获取当前价格
+                    df = get_stock_daily(signal['stock_code'], days=1)
+                    price = df['close'].iloc[-1] if not df.empty else 100.0
                     volume = 100
                     side = "buy" if "买入" in signal['action'] else "sell"
                     
@@ -3833,6 +4134,7 @@ def render_live_signals():
                 elif signal['action'] in ["买入", "卖出(获利)"]:
                     st.caption("⚙️ 掘金未配置")
     
+    # 显示使用说明
     profile = get_user_profile(st.session_state.user_id, st.session_state.get("access_token"))
     if profile.get("subscription_tier") == "free":
         remaining = get_remaining_trials(st.session_state.user_id, st.session_state.get("access_token"))
@@ -3841,10 +4143,11 @@ def render_live_signals():
     st.markdown("---")
     st.markdown("### 📖 操作指引")
     st.markdown("""
-    1. 查看上方交易信号
-    2. 点击[🤖 下单]按钮通过掘金自动下单
-    3. 或在券商App手动下单
-    4. 可在实操池中记录持仓
+    1. 在【我的实操池】添加已持有的股票，记录持仓成本
+    2. 查看上方交易信号（来自推荐池高分股票 + 实操池持仓）
+    3. 点击[🤖 下单]按钮通过掘金自动下单
+    4. 或在券商App手动下单
+    5. 可在实操池中编辑/删除持仓记录
     
     ⚠️ 投资有风险，请谨慎决策
     """)
@@ -3863,6 +4166,7 @@ print("=" * 60)
 # - 管理员面板添加股票列表同步按钮
 # - 添加板块缓存初始化
 # - 添加板块管理入口
+# - 添加各模块权重初始化
 # ============================================================
 
 # ==================== 自定义CSS ====================
@@ -3921,6 +4225,34 @@ def get_cached_stock_data(ts_code: str, days: int = 120):
 def get_cached_stock_score(ts_code: str, stock_name: str = ""):
     """缓存股票评分结果"""
     return get_stock_score(ts_code, stock_name)
+
+
+# ==================== 各模块权重初始化 ====================
+
+def init_all_module_weights():
+    """
+    初始化所有5个模块的独立权重配置
+    在用户登录后调用一次
+    """
+    # 获取用户保存的回测参数中的权重（作为个股分析的初始值）
+    user_settings = get_user_backtest_settings(
+        st.session_state.user_id, 
+        st.session_state.get("access_token")
+    )
+    user_weights = user_settings.get("tech_weights", TECH_WEIGHTS.copy())
+    
+    # 定义模块列表及其初始权重来源
+    modules_to_init = [
+        ("weights_market_brief", TECH_WEIGHTS.copy()),      # 市场简报使用默认权重
+        ("weights_recommended", TECH_WEIGHTS.copy()),       # 推荐股票池使用默认权重
+        ("weights_stock_analysis", user_weights.copy()),    # 个股分析使用用户保存的权重
+        ("weights_backtest", user_weights.copy()),          # 回测功能使用用户保存的权重
+        ("weights_live_signals", user_weights.copy())       # 实操信号使用用户保存的权重（默认复制个股分析）
+    ]
+    
+    for key, default_weights in modules_to_init:
+        if st.session_state.get(key) is None:
+            st.session_state[key] = default_weights
 
 
 # ==================== 管理员辅助函数 ====================
@@ -4037,6 +4369,34 @@ def send_password_reset_email(email: str) -> tuple:
             return False, f"发送失败: {response.text}"
     except Exception as e:
         return False, f"发送失败: {str(e)}"
+
+
+def update_live_pool_prices(user_id: str, stock_code: str, shares: int = None, 
+                            avg_cost: float = None, access_token: str = None) -> tuple:
+    """更新实操池中股票的持仓信息（辅助函数）"""
+    try:
+        update_data = {}
+        if shares is not None:
+            update_data["shares"] = shares
+        if avg_cost is not None:
+            update_data["avg_cost"] = avg_cost
+        update_data["updated_time"] = datetime.now().isoformat()
+        
+        if not update_data:
+            return False, "无更新内容"
+        
+        response = supabase_request(
+            "PATCH",
+            "live_pool",
+            data=update_data,
+            params=f"user_id=eq.{user_id}&stock_code=eq.{stock_code}",
+            access_token=access_token
+        )
+        if response.status_code in [200, 204]:
+            return True, f"已更新 {stock_code}"
+        return False, f"更新失败: {response.text}"
+    except Exception as e:
+        return False, f"更新失败: {str(e)}"
 
 
 # ==================== 管理员面板 ====================
@@ -4466,8 +4826,6 @@ def render_main_app():
     
     handle_stripe_callback()  # 保留原有回调，两者并存
     
-    # ... 其余代码不变    
-      
     # 板块管理页面
     if st.session_state.get("show_sector_management", False):
         render_sector_management()
@@ -4496,6 +4854,8 @@ def render_main_app():
         if not st.session_state.get("sector_cache_loaded", False):
             init_sector_cache_on_startup()
             st.session_state.sector_cache_loaded = True
+        # 初始化各模块权重
+        init_all_module_weights()
     
     # 模块1：市场简报
     with st.container():
@@ -4569,4 +4929,8 @@ if __name__ == "__main__":
 print("第5部分加载完成")
 print("=" * 60)
 print("所有代码加载完成！AI量化股票系统 v4.0 已就绪。")
+print("更新内容：")
+print("  - 5个模块独立权重配置（右上角自动保存）")
+print("  - 市场简报增加上证指数技术指标")
+print("  - 实操信号模块新增实操池增删功能")
 print("=" * 60)
