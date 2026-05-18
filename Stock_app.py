@@ -78,6 +78,49 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ==================== 强制初始化 Session State（必须在任何其他代码之前） ====================
+if "kdj_k_fallback" not in st.session_state:
+    st.session_state.kdj_k_fallback = 50
+    st.session_state.kdj_d_fallback = 50
+    st.session_state.kdj_j_fallback = 50
+
+# 初始化所有必需的 session state 变量
+_required_state = {
+    "lang": "zh",
+    "authenticated": False,
+    "user_id": None,
+    "user_email": None,
+    "admin_mode": False,
+    "show_admin_login": False,
+    "show_register": False,
+    "show_paywall": False,
+    "analyze_code": "",
+    "analyze_name": "",
+    "market": "A股",
+    "last_update_time": {},
+    "stock_cache_loaded": False,
+    "sector_cache_loaded": False,
+    "show_sector_management": False,
+    "edit_live_stock": None,
+    "show_add_stocks_to_sector": False,
+    "new_sector_name": "",
+    "access_token": None,
+    "refresh_token": None,
+    "token_expiry": 0,
+    "admin_previous_user_id": None,
+    "admin_previous_user_email": None,
+    "admin_previous_access_token": None,
+    "admin_previous_refresh_token": None,
+    "payment_url": None,
+    "payment_type": None,
+    "backtest_result": None,
+    "admin_view_user_id": None,
+    "admin_view_user_email": None,
+}
+
+for _key, _default in _required_state.items():
+    if _key not in st.session_state:
+        st.session_state[_key] = _default
 # ==================== 管理员配置 ====================
 ADMIN_USERNAME = "Laurence_ku"
 ADMIN_PASSWORD = "Ku_product$2026"
@@ -1996,54 +2039,70 @@ def calculate_macd(df: pd.DataFrame, fast=12, slow=26, signal=9) -> Dict:
 
 def calculate_kdj(df: pd.DataFrame, n=9, m1=3, m2=3) -> Dict:
     """计算KDJ指标"""
+    # 默认返回值
+    default_result = {"k": 50.0, "d": 50.0, "j": 50.0, "signal_level": "neutral", "score": 50}
+    
     if df.empty or len(df) < n:
-        return {"k": 50, "d": 50, "j": 50, "signal_level": "neutral", "score": 50}
+        return default_result
     
-    low = df['low'].values
-    high = df['high'].values
-    close = df['close'].values
-    
-    k_values = []
-    d_values = []
-    
-    for i in range(len(df)):
-        if i < n - 1:
-            k_values.append(50)
-            d_values.append(50)
-            continue
+    try:
+        low = df['low'].values
+        high = df['high'].values
+        close = df['close'].values
         
-        low_n = min(low[i-n+1:i+1])
-        high_n = max(high[i-n+1:i+1])
-        rsv = (close[i] - low_n) / (high_n - low_n) * 100 if high_n != low_n else 50
+        k_values = []
+        d_values = []
         
-        if i == n - 1:
-            k = 50
-            d = 50
+        for i in range(len(df)):
+            if i < n - 1:
+                k_values.append(50.0)
+                d_values.append(50.0)
+                continue
+            
+            low_n = min(low[i-n+1:i+1])
+            high_n = max(high[i-n+1:i+1])
+            if high_n != low_n:
+                rsv = (close[i] - low_n) / (high_n - low_n) * 100
+            else:
+                rsv = 50.0
+            
+            if i == n - 1:
+                k = 50.0
+                d = 50.0
+            else:
+                k = (2/3) * k_values[-1] + (1/3) * rsv
+                d = (2/3) * d_values[-1] + (1/3) * k
+            
+            k_values.append(k)
+            d_values.append(d)
+        
+        k = k_values[-1]
+        d = d_values[-1]
+        j = 3 * k - 2 * d
+        
+        if k < 20 and d < 20 and k > d:
+            signal_level = "oversold_golden"
+            score = 100
+        elif k > 80 and d > 80 and k < d:
+            signal_level = "overbought_death"
+            score = 0
+        elif k > d:
+            signal_level = "bullish"
+            score = 70
         else:
-            k = (2/3) * k_values[-1] + (1/3) * rsv
-            d = (2/3) * d_values[-1] + (1/3) * k
+            signal_level = "bearish"
+            score = 30
         
-        k_values.append(k)
-        d_values.append(d)
-    
-    k = k_values[-1]
-    d = d_values[-1]
-    j = 3 * k - 2 * d
-    
-    if k < 20 and d < 20 and k > d:
-        signal_level = "oversold_golden"
-        score = 100
-    elif k > 80 and d > 80 and k < d:
-        signal_level = "overbought_death"
-        score = 0
-    elif k > d:
-        signal_level = "bullish"
-        score = 70
-    else:
-        signal_level = "bearish"
-        score = 30
-    
-    return {"k": k, "d": d, "j": j, "signal_level": signal_level, "score": score}
+        return {
+            "k": float(k),
+            "d": float(d),
+            "j": float(j),
+            "signal_level": signal_level,
+            "score": score
+        }
+    except Exception as e:
+        print(f"KDJ计算错误: {e}")
+        return default_result
 
 
 def calculate_bollinger_bands(df: pd.DataFrame, period=20, std_dev=2) -> Dict:
@@ -3140,8 +3199,7 @@ def render_market_brief():
                     d_val = kdj_data.get("d", 50) if isinstance(kdj_data, dict) else 50
                     kdj_score = kdj_data.get("score", 50) if isinstance(kdj_data, dict) else 50
                     kdj_status = f"K:{k_val:.0f}/D:{d_val:.0f}"
-                    st.metric("KDJ", kdj_status, delta=f"{kdj_score:.0f}分")
-                
+                    st.metric("KDJ", kdj_status, delta=f"{kdj_score:.0f}分")                
                 with col4:
                     rsi_data = index_indicators.get("rsi", {})
                     rsi_val = rsi_data.get("rsi", 50) if isinstance(rsi_data, dict) else 50
