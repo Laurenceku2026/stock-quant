@@ -1630,77 +1630,70 @@ def refresh_live_pool_prices(user_id: str, access_token: str = None) -> tuple:
 def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
     """
     自动推荐Top10股票
-    使用 Tushare 获取板块列表，使用 AkShare 获取板块成分股
+    从缓存读取板块和成分股（快速，不调用 Tushare API）
     """
-    st.write("🔍 DEBUG: auto_recommend_top10 函数开始执行")
-    print("🔍 DEBUG: auto_recommend_top10 函数开始执行")
+    st.write("🚀 从缓存读取板块数据...")
     
-    if not TUSHARE_AVAILABLE:
-        st.error("❌ Tushare不可用")
-        return []
+    # 1. 从缓存读取板块（复用原有的 load_sector_cache）
+    sectors = load_sector_cache()
+    
+    if not sectors:
+        st.write("⚠️ 板块缓存为空，使用预置板块")
+        return auto_recommend_top10_fallback(user_id, access_token)
+    
+    # 按热度排序（如果有热度字段）
+    try:
+        sectors.sort(key=lambda x: x.get('hot_score', 0), reverse=True)
+    except:
+        pass
+    
+    hot_sectors = sectors[:10]
     
     all_scored_stocks = []
     
-    # 方案1：使用 AkShare 获取热门概念板块
-    hot_concepts = get_hot_concepts_tushare(limit=10)
-    
-    if hot_concepts:
-        # 使用 AkShare 的热门板块
-        for concept in hot_concepts:
-            concept_name = concept['name']
-            concept_pct = concept.get('pct_chg', 0)
-            
-            # 获取板块成分股
-            members = get_concept_stocks_tushare(concept_name)
-            
-            for member in members[:5]:  # 每个板块取前5只
-                ts_code = member['code']
-                stock_name = member['name']
-                
-                # 计算综合评分
-                score_result = get_stock_score(ts_code, stock_name, sector_name=concept_name)
-                
-                all_scored_stocks.append({
-                    "code": ts_code,
-                    "name": stock_name,
-                    "score": score_result["total_score"],
-                    "sector": concept_name,
-                    "sector_pct": concept_pct,
-                    "rank_in_sector": member.get('rank', 999)
-                })
-    else:
-        # 降级：使用 Tushare 概念板块
-        concepts = get_tushare_concept_list()
-        if concepts:
-            for concept in concepts[:10]:
-                concept_code = concept.get('code')
-                concept_name = concept.get('name')
-                
-                # 使用 AkShare 获取成分股
-                members = get_concept_stocks_tushare(concept_name)
-                
-                if not members:
-                    continue
-                
-                for member in members[:5]:
-                    ts_code = member['code']
-                    stock_name = member['name']
-                    
-                    score_result = get_stock_score(ts_code, stock_name, sector_name=concept_name)
-                    
-                    all_scored_stocks.append({
-                        "code": ts_code,
-                        "name": stock_name,
-                        "score": score_result["total_score"],
-                        "sector": concept_name,
-                        "rank_in_sector": member.get('rank', 999)
+    for sector in hot_sectors:
+        sector_name = sector.get('sector_name')
+        if not sector_name:
+            continue
+        
+        # 2. 从缓存读取板块成分股（使用新函数）
+        members = get_sector_members_from_cache(sector_name, limit=10)
+        
+        if not members:
+            # 如果缓存没有成分股，尝试从预置板块获取
+            if sector_name in HOT_SECTORS:
+                sector_info = HOT_SECTORS[sector_name]
+                members = []
+                for i, code in enumerate(sector_info.get("stocks", [])[:10]):
+                    name = sector_info.get("names", [])[i] if i < len(sector_info.get("names", [])) else code
+                    members.append({
+                        "stock_code": code,
+                        "stock_name": name
                     })
+            else:
+                continue
+        
+        for member in members[:5]:  # 每个板块取前5只
+            ts_code = member.get('stock_code')
+            stock_name = member.get('stock_name')
+            
+            if not ts_code:
+                continue
+            
+            # 3. 计算评分（传入板块名称）
+            score_result = get_stock_score(ts_code, stock_name, sector_name=sector_name)
+            
+            all_scored_stocks.append({
+                "code": ts_code,
+                "name": stock_name,
+                "score": score_result["total_score"],
+                "sector": sector_name
+            })
     
     if not all_scored_stocks:
-        # 最终降级：使用预置板块
         return auto_recommend_top10_fallback(user_id, access_token)
     
-    # 去重并按得分排序
+    # 4. 去重并排序
     seen = set()
     unique_stocks = []
     for stock in all_scored_stocks:
@@ -1711,18 +1704,13 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
     unique_stocks.sort(key=lambda x: x["score"], reverse=True)
     top10 = unique_stocks[:10]
     
-    # 清空旧的AI推荐
-    stocks = get_recommended_pool(user_id, access_token)
-    for stock in stocks:
-        if stock.get("source") == "ai":
-            supabase_request(
-                "DELETE",
-                "recommended_pool",
-                params=f"id=eq.{stock['id']}",
-                access_token=access_token
-            )
+    # 5. 清空旧的AI推荐
+    existing_stocks = get_recommended_pool(user_id, access_token)
+    for s in existing_stocks:
+        if s.get("source") == "ai":
+            supabase_request("DELETE", "recommended_pool", params=f"id=eq.{s['id']}", access_token=access_token)
     
-    # 添加新的推荐
+    # 6. 添加新的推荐
     for stock in top10:
         add_to_recommended_pool(
             user_id, stock["code"], stock["name"], source="ai",
@@ -1733,8 +1721,6 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
 
 
 def auto_recommend_top10_fallback(user_id: str, access_token: str = None) -> List[Dict]:
-    st.write("🔍 DEBUG: 进入 fallback 函数")
-    st.write(f"HOT_SECTORS 内容: {list(HOT_SECTORS.keys())}")   
     """降级方案：使用预置板块"""
     all_stocks = []
     for sector_name, sector_info in HOT_SECTORS.items():
@@ -1754,10 +1740,10 @@ def auto_recommend_top10_fallback(user_id: str, access_token: str = None) -> Lis
             seen.add(stock["code"])
             unique_stocks.append(stock)
     
-    # 评分
+    # 评分（传入板块名称）
     scored_stocks = []
-    for stock in unique_stocks:  # 确保这个循环能执行
-        score_result = get_stock_score(ts_code, stock_name, sector_name=concept_name)
+    for stock in unique_stocks:
+        score_result = get_stock_score(stock["code"], stock["name"], sector_name=stock["sector"])
         scored_stocks.append({
             "code": stock["code"],
             "name": stock["name"],
@@ -1768,6 +1754,13 @@ def auto_recommend_top10_fallback(user_id: str, access_token: str = None) -> Lis
     scored_stocks.sort(key=lambda x: x["score"], reverse=True)
     top10 = scored_stocks[:10]
     
+    # 清空旧的AI推荐
+    existing_stocks = get_recommended_pool(user_id, access_token)
+    for s in existing_stocks:
+        if s.get("source") == "ai":
+            supabase_request("DELETE", "recommended_pool", params=f"id=eq.{s['id']}", access_token=access_token)
+    
+    # 添加新的推荐
     for stock in top10:
         add_to_recommended_pool(
             user_id, stock["code"], stock["name"], source="ai",
