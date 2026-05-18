@@ -764,22 +764,31 @@ def init_sector_cache_on_startup():
         st.session_state.sector_cache_loaded = True
 
 def get_sector_members_from_cache(sector_name: str, limit: int = 10) -> List[Dict]:
-    """
-    从缓存读取板块成分股
-    返回: [{"stock_code": "000001.SZ", "stock_name": "平安银行"}, ...]
-    """
+    """从 sector_cache 表读取板块成分股"""
     try:
         headers = get_supabase_headers(use_secret=False)
         import urllib.parse
         encoded_name = urllib.parse.quote(sector_name)
-        url = f"{SUPABASE_URL}/rest/v1/sector_members_cache?sector_name=eq.{encoded_name}&limit={limit}"
+        url = f"{SUPABASE_URL}/rest/v1/sector_cache?sector_name=eq.{encoded_name}"
         response = requests.get(url, headers=headers)
         
-        if response.status_code == 200:
-            return response.json()
+        if response.status_code == 200 and response.json():
+            sector_data = response.json()[0]
+            stock_codes = sector_data.get('stock_codes', [])
+            stock_names = sector_data.get('stock_names', [])
+            
+            members = []
+            for i, code in enumerate(stock_codes[:limit]):
+                name = stock_names[i] if i < len(stock_names) else code
+                members.append({
+                    "stock_code": code,
+                    "stock_name": name,
+                    "rank": i + 1
+                })
+            return members
         return []
     except Exception as e:
-        print(f"读取成分股缓存失败 {sector_name}: {e}")
+        print(f"读取成分股缓存失败: {e}")
         return []
 # ========================================
 def get_sector_members_fallback(sector_name: str, limit: int = 10) -> List[Dict]:
