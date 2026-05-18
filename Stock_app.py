@@ -1642,7 +1642,7 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
     all_scored_stocks = []
     
     # 方案1：使用 AkShare 获取热门概念板块
-    hot_concepts = get_hot_concepts_akshare(limit=10)
+    hot_concepts = get_hot_concepts_tushare(limit=10)
     
     if hot_concepts:
         # 使用 AkShare 的热门板块
@@ -1651,7 +1651,7 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
             concept_pct = concept.get('pct_chg', 0)
             
             # 获取板块成分股
-            members = get_concept_stocks_akshare(concept_name)
+            members = get_concept_stocks_tushare(concept_name)
             
             for member in members[:5]:  # 每个板块取前5只
                 ts_code = member['code']
@@ -1677,7 +1677,7 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
                 concept_name = concept.get('name')
                 
                 # 使用 AkShare 获取成分股
-                members = get_concept_stocks_akshare(concept_name)
+                members = get_concept_stocks_tushare(concept_name)
                 
                 if not members:
                     continue
