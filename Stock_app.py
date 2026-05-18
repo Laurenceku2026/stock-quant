@@ -203,63 +203,6 @@ STOCK_NAME_CACHE = {}
 
 # ==================== 掘金板块数据获取 ====================
 
-def get_ths_sector_list() -> List[Dict]:
-    """
-    获取同花顺板块列表
-    返回: [{"code": "BK0001", "name": "人工智能", ...}, ...]
-    """
-    if not GM_AVAILABLE:
-        return []
-    
-    try:
-        from gm.api import get_ths_index
-        # 获取同花顺概念板块列表
-        sectors = get_ths_index(sector_type="concept")
-        if sectors is not None and len(sectors) > 0:
-            return sectors.to_dict('records')
-        return []
-    except Exception as e:
-        print(f"获取同花顺板块列表失败: {e}")
-        return []
-
-def get_ths_sector_daily(sector_code: str, days: int = 5) -> pd.DataFrame:
-    """
-    获取同花顺板块日线行情
-    返回: DataFrame包含 date, close, pct_chg, volume, amount
-    """
-    if not GM_AVAILABLE:
-        return pd.DataFrame()
-    
-    try:
-        from gm.api import get_ths_daily
-        end_date = datetime.now().strftime("%Y-%m-%d")
-        start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-        df = get_ths_daily(symbol=sector_code, start_date=start_date, end_date=end_date)
-        if df is not None and len(df) > 0:
-            return df
-        return pd.DataFrame()
-    except Exception as e:
-        print(f"获取板块行情失败 {sector_code}: {e}")
-        return pd.DataFrame()
-
-def get_ths_sector_members(sector_code: str) -> List[str]:
-    """
-    获取同花顺板块成分股列表
-    返回: 股票代码列表
-    """
-    if not GM_AVAILABLE:
-        return []
-    
-    try:
-        from gm.api import get_ths_member
-        members = get_ths_member(sector_code)
-        if members is not None and len(members) > 0:
-            return members['symbol'].tolist()
-        return []
-    except Exception as e:
-        print(f"获取板块成分失败 {sector_code}: {e}")
-        return []
-
 # ==================== Supabase 配置 ====================
 SUPABASE_URL = st.secrets.get("SUPABASE_STOCK_URL", "")
 SUPABASE_PUBLISHABLE_KEY = st.secrets.get("SUPABASE_STOCK_ANON_KEY", "")
@@ -918,6 +861,160 @@ def get_cached_sector_performance():
 init_tushare()
 init_gm()
 
+# ==================== AkShare 龙头股数据获取 ====================
+
+def get_concept_stocks_akshare(concept_name: str) -> List[Dict]:
+    """
+    使用 AkShare 获取概念板块成分股（龙头股）
+    返回: [{"code": "000001.SZ", "name": "平安银行", "rank": 1, "pct_chg": 5.2}, ...]
+    """
+    try:
+        import akshare as ak
+        
+        # 获取指定概念板块的成分股
+        df = ak.stock_board_concept_cons_em(symbol=concept_name)
+        
+        if df is not None and not df.empty:
+            result = []
+            for _, row in df.iterrows():
+                code = row.get('代码', '')
+                name = row.get('名称', '')
+                pct_chg = row.get('涨跌幅', 0)
+                
+                # 转换为 Tushare 格式（如 000001.SZ）
+                if code:
+                    if code.startswith('6'):
+                        ts_code = f"{code}.SH"
+                    else:
+                        ts_code = f"{code}.SZ"
+                    
+                    result.append({
+                        "code": ts_code,
+                        "name": name,
+                        "pct_chg": pct_chg,
+                        "board_name": concept_name
+                    })
+            
+            # 按涨跌幅排序，识别龙头股
+            result.sort(key=lambda x: x.get('pct_chg', 0), reverse=True)
+            for i, stock in enumerate(result):
+                stock['rank'] = i + 1  # 排名，1为龙头
+            
+            return result
+        return []
+    except Exception as e:
+        print(f"AkShare 获取板块成分失败 {concept_name}: {e}")
+        return []
+
+def get_hot_concepts_akshare(limit: int = 10) -> List[Dict]:
+    """
+    获取热门概念板块列表（按涨跌幅排序）
+    返回: [{"name": "人工智能", "pct_chg": 3.2, "leader_stock": "000001.SZ"}, ...]
+    """
+    try:
+        import akshare as ak
+        
+        # 获取所有概念板块行情
+        df = ak.stock_board_concept_name_em()
+        
+        if df is None or df.empty:
+            return []
+        
+        # 获取涨跌幅数据
+        concept_list = []
+        for _, row in df.iterrows():
+            concept_name = row.get('板块名称', '')
+            if concept_name:
+                concept_list.append({
+                    "name": concept_name,
+                    "code": concept_name
+                })
+        
+        # 获取每个板块的涨跌幅（简化版，使用成分股平均涨跌幅）
+        hot_concepts = []
+        for concept in concept_list[:20]:  # 取前20个板块分析
+            members = get_concept_stocks_akshare(concept['name'])
+            if members:
+                avg_pct = sum([s.get('pct_chg', 0) for s in members]) / len(members)
+                leader = members[0] if members else None
+                hot_concepts.append({
+                    "name": concept['name'],
+                    "pct_chg": round(avg_pct, 2),
+                    "leader_code": leader['code'] if leader else '',
+                    "leader_name": leader['name'] if leader else '',
+                    "member_count": len(members)
+                })
+        
+        # 按涨跌幅排序
+        hot_concepts.sort(key=lambda x: x.get('pct_chg', 0), reverse=True)
+        return hot_concepts[:limit]
+        
+    except Exception as e:
+        print(f"AkShare 获取热门板块失败: {e}")
+        return []
+
+
+def get_leader_rank_in_concept(stock_code: str, concept_name: str) -> int:
+    """
+    获取股票在指定概念板块中的龙头排名
+    返回: 排名（1为龙头），0表示未找到
+    """
+    try:
+        members = get_concept_stocks_akshare(concept_name)
+        for member in members:
+            if member['code'] == stock_code:
+                return member.get('rank', 0)
+        return 0
+    except Exception as e:
+        print(f"获取龙头排名失败: {e}")
+        return 0
+# ==================== Tushare 板块数据获取 ====================
+
+def get_tushare_concept_list() -> List[Dict]:
+    """获取Tushare概念板块列表"""
+    if not TUSHARE_AVAILABLE:
+        return []
+    
+    try:
+        df = TUSHARE_PRO.concept()
+        if df is not None and not df.empty:
+            return df.to_dict('records')
+        return []
+    except Exception as e:
+        print(f"获取概念板块列表失败: {e}")
+        return []
+
+
+def get_tushare_concept_daily(concept_code: str, days: int = 5) -> pd.DataFrame:
+    """获取概念板块日线行情"""
+    if not TUSHARE_AVAILABLE:
+        return pd.DataFrame()
+    
+    try:
+        end_date = datetime.now().strftime("%Y%m%d")
+        start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+        df = TUSHARE_PRO.concept_daily(concept_code=concept_code, start_date=start_date, end_date=end_date)
+        if df is not None and not df.empty:
+            return df.sort_values('trade_date')
+        return pd.DataFrame()
+    except Exception as e:
+        print(f"获取板块行情失败 {concept_code}: {e}")
+        return pd.DataFrame()
+
+
+def get_tushare_concept_members(concept_code: str) -> List[str]:
+    """获取概念板块成分股"""
+    if not TUSHARE_AVAILABLE:
+        return []
+    
+    try:
+        df = TUSHARE_PRO.concept_member(concept_code=concept_code)
+        if df is not None and not df.empty:
+            return df['ts_code'].tolist()
+        return []
+    except Exception as e:
+        print(f"获取板块成分失败: {e}")
+        return []
 print("第1部分加载完成")
 print("=" * 60)
 # ============================================================
@@ -1534,56 +1631,75 @@ def refresh_live_pool_prices(user_id: str, access_token: str = None) -> tuple:
 
 def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
     """
-    自动推荐Top10股票（基于完整评分：板块热度+龙头识别+技术指标）
+    自动推荐Top10股票
+    使用 Tushare 获取板块列表，使用 AkShare 获取板块成分股
     """
     if not TUSHARE_AVAILABLE:
         st.error("❌ Tushare不可用")
         return []
     
-    # 获取热点板块（优先使用掘金，降级使用预置）
-    hot_sectors_data = []
-    if GM_AVAILABLE:
-        try:
-            ths_sectors = get_ths_sector_list()
-            hot_sectors_data = ths_sectors[:10]  # 取前10个热门板块
-        except:
-            pass
-    
-    if not hot_sectors_data:
-        # 降级使用预置板块
-        for sector_name, sector_info in HOT_SECTORS.items():
-            hot_sectors_data.append({
-                "name": sector_name,
-                "code": sector_name,
-                "stocks": sector_info["stocks"],
-                "names": sector_info["names"]
-            })
-    
     all_scored_stocks = []
-    for sector in hot_sectors_data:
-        sector_code = sector.get("code")
-        sector_name = sector.get("name")
-        stock_codes = sector.get("stocks", [])
-        stock_names = sector.get("names", [])
-        
-        for i, ts_code in enumerate(stock_codes[:5]):  # 每个板块取前5只
-            stock_name = stock_names[i] if i < len(stock_names) else ts_code
-            # 使用完整评分，传入板块信息
-            score_result = get_stock_score(ts_code, stock_name, sector_code=sector_code, sector_name=sector_name)
-            all_scored_stocks.append({
-                "code": ts_code,
-                "name": stock_name,
-                "score": score_result["total_score"],
-                "level": score_result["level"],
-                "action": score_result["action"],
-                "sector": sector_name,
-                "sector_heat": score_result["sector_heat_score"],
-                "leader_score": score_result["leader_score"],
-                "tech_score": score_result["tech_score"],
-                "trend_score": score_result["trend_score"]
-            })
     
-    # 去重
+    # 方案1：使用 AkShare 获取热门概念板块
+    hot_concepts = get_hot_concepts_akshare(limit=10)
+    
+    if hot_concepts:
+        # 使用 AkShare 的热门板块
+        for concept in hot_concepts:
+            concept_name = concept['name']
+            concept_pct = concept.get('pct_chg', 0)
+            
+            # 获取板块成分股
+            members = get_concept_stocks_akshare(concept_name)
+            
+            for member in members[:5]:  # 每个板块取前5只
+                ts_code = member['code']
+                stock_name = member['name']
+                
+                # 计算综合评分
+                score_result = get_stock_score(ts_code, stock_name)
+                
+                all_scored_stocks.append({
+                    "code": ts_code,
+                    "name": stock_name,
+                    "score": score_result["total_score"],
+                    "sector": concept_name,
+                    "sector_pct": concept_pct,
+                    "rank_in_sector": member.get('rank', 999)
+                })
+    else:
+        # 降级：使用 Tushare 概念板块
+        concepts = get_tushare_concept_list()
+        if concepts:
+            for concept in concepts[:10]:
+                concept_code = concept.get('code')
+                concept_name = concept.get('name')
+                
+                # 使用 AkShare 获取成分股
+                members = get_concept_stocks_akshare(concept_name)
+                
+                if not members:
+                    continue
+                
+                for member in members[:5]:
+                    ts_code = member['code']
+                    stock_name = member['name']
+                    
+                    score_result = get_stock_score(ts_code, stock_name)
+                    
+                    all_scored_stocks.append({
+                        "code": ts_code,
+                        "name": stock_name,
+                        "score": score_result["total_score"],
+                        "sector": concept_name,
+                        "rank_in_sector": member.get('rank', 999)
+                    })
+    
+    if not all_scored_stocks:
+        # 最终降级：使用预置板块
+        return auto_recommend_top10_fallback(user_id, access_token)
+    
+    # 去重并按得分排序
     seen = set()
     unique_stocks = []
     for stock in all_scored_stocks:
@@ -1591,14 +1707,63 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
             seen.add(stock["code"])
             unique_stocks.append(stock)
     
-    # 按总分排序
     unique_stocks.sort(key=lambda x: x["score"], reverse=True)
     top10 = unique_stocks[:10]
     
-    # 添加到推荐池
+    # 清空旧的AI推荐
+    stocks = get_recommended_pool(user_id, access_token)
+    for stock in stocks:
+        if stock.get("source") == "ai":
+            supabase_request(
+                "DELETE",
+                "recommended_pool",
+                params=f"id=eq.{stock['id']}",
+                access_token=access_token
+            )
+    
+    # 添加新的推荐
     for stock in top10:
         add_to_recommended_pool(
-            user_id, stock["code"], stock["name"], source="ai", 
+            user_id, stock["code"], stock["name"], source="ai",
+            score=stock["score"], access_token=access_token
+        )
+    
+    return top10
+
+
+def auto_recommend_top10_fallback(user_id: str, access_token: str = None) -> List[Dict]:
+    """降级方案：使用预置板块"""
+    all_stocks = []
+    for sector_name, sector_info in HOT_SECTORS.items():
+        for i, ts_code in enumerate(sector_info["stocks"]):
+            stock_name = sector_info["names"][i] if i < len(sector_info["names"]) else ts_code
+            all_stocks.append({"code": ts_code, "name": stock_name, "sector": sector_name})
+    
+    # 去重
+    seen = set()
+    unique_stocks = []
+    for stock in all_stocks:
+        if stock["code"] not in seen:
+            seen.add(stock["code"])
+            unique_stocks.append(stock)
+    
+    # 评分
+    scored_stocks = []
+    for stock in unique_stocks:
+        score_result = get_stock_score(stock["code"], stock["name"])
+        scored_stocks.append({
+            "code": stock["code"],
+            "name": stock["name"],
+            "score": score_result["total_score"],
+            "sector": stock["sector"]
+        })
+    
+    scored_stocks.sort(key=lambda x: x["score"], reverse=True)
+    top10 = scored_stocks[:10]
+    
+    for stock in top10:
+        add_to_recommended_pool(
+            user_id, stock["code"], stock["name"], source="ai",
             score=stock["score"], access_token=access_token
         )
     
@@ -2444,56 +2609,44 @@ def calculate_technical_score(df: pd.DataFrame, tech_weights: Dict = None) -> Di
 
 def calculate_sector_heat_score(sector_code: str = None, sector_name: str = None) -> float:
     """
-    计算板块热度得分（40%权重）
-    因子：
-    - 成交量活跃度（35%）：板块成交额 / 全市场成交额
-    - 价格强度（35%）：板块5日/20日涨跌幅
-    - 涨停家数（30%）：板块内涨停股票数量
+    计算板块热度得分（使用 Tushare concept_daily）
+    权重：占综合评分的 40%
     """
-    # 如果没有掘金连接或未指定板块，返回默认分
-    if not GM_AVAILABLE or (sector_code is None and sector_name is None):
+    if not TUSHARE_AVAILABLE:
         return 50.0
     
     try:
-        # 1. 获取板块行情数据
+        # 如果没有板块信息，返回默认分
+        if not sector_code and not sector_name:
+            return 50.0
+        
+        # 尝试获取板块行情
         if sector_code:
-            df = get_ths_sector_daily(sector_code, days=20)
+            df = get_tushare_concept_daily(sector_code, days=20)
         else:
-            # 如果没有code，尝试按名称查找
-            sectors = get_ths_sector_list()
-            for s in sectors:
-                if s.get('name') == sector_name:
-                    sector_code = s.get('code')
+            # 如果没有代码，尝试按名称查找
+            concepts = get_tushare_concept_list()
+            for c in concepts:
+                if c.get('name') == sector_name:
+                    sector_code = c.get('code')
                     break
             if sector_code:
-                df = get_ths_sector_daily(sector_code, days=20)
+                df = get_tushare_concept_daily(sector_code, days=20)
             else:
                 return 50.0
         
         if df.empty or len(df) < 5:
             return 50.0
         
-        # 2. 计算成交量活跃度（35%）
-        latest_volume = df['volume'].iloc[-1] if 'volume' in df.columns else 0
-        avg_volume = df['volume'].iloc[-5:].mean() if 'volume' in df.columns else 1
-        volume_ratio = latest_volume / avg_volume if avg_volume > 0 else 1
-        volume_score = min(100, volume_ratio * 50)  # 放量2倍得100分
-        
-        # 3. 计算价格强度（35%）
+        # 计算价格强度得分（涨跌幅）
         if 'pct_chg' in df.columns:
             chg_5d = df['pct_chg'].iloc[-5:].sum() if len(df) >= 5 else 0
-            chg_20d = df['pct_chg'].sum() if len(df) >= 20 else chg_5d
             # 涨跌幅映射到0-100分（涨10%得100分，跌10%得0分）
             price_score = min(100, max(0, (chg_5d + 10) * 5))
         else:
             price_score = 50
         
-        # 4. 计算涨停家数（30%）- 简化版，实际需要个股数据
-        limit_up_score = 50  # 默认中性
-        
-        # 综合得分
-        total_score = volume_score * 0.35 + price_score * 0.35 + limit_up_score * 0.30
-        return round(total_score, 2)
+        return round(price_score, 2)
         
     except Exception as e:
         print(f"计算板块热度得分失败: {e}")
@@ -2501,43 +2654,53 @@ def calculate_sector_heat_score(sector_code: str = None, sector_name: str = None
 
 def calculate_leader_score(stock_code: str, sector_code: str = None) -> float:
     """
-    计算龙头识别得分（30%权重）
-    因子：
-    - 相对强度（40%）：个股涨幅 / 板块涨幅
-    - 市值承载（30%）：流通市值分位数
-    - 流动性（30%）：日均成交额分位数
+    计算龙头识别得分（使用 AkShare 获取板块成分股排名）
+    权重：占综合评分的 30%
     """
+    # 如果没有板块信息，返回默认分
+    if not sector_code:
+        return 50.0
+    
     try:
-        # 1. 相对强度（40%）
-        stock_df = get_stock_daily(stock_code, days=20)
-        if stock_df.empty:
-            relative_strength = 1.0
+        # 注意：sector_code 实际上是板块名称（因为 Tushare 传的是名称）
+        # 为了兼容，直接使用 sector_code 作为板块名称
+        concept_name = sector_code
+        
+        # 使用 AkShare 获取板块成分股
+        members = get_concept_stocks_akshare(concept_name)
+        
+        if not members:
+            return 50.0
+        
+        # 1. 排名得分（50%）：排名越靠前得分越高
+        rank = 0
+        stock_pct = 0
+        for member in members:
+            if member['code'] == stock_code:
+                rank = member.get('rank', 0)
+                stock_pct = member.get('pct_chg', 0)
+                break
+        
+        if rank > 0:
+            rank_score = 100 * (1 - rank / len(members))
         else:
-            stock_chg = (stock_df['close'].iloc[-1] - stock_df['close'].iloc[-5]) / stock_df['close'].iloc[-5] * 100 if len(stock_df) >= 5 else 0
-            
-            if sector_code and GM_AVAILABLE:
-                sector_df = get_ths_sector_daily(sector_code, days=5)
-                if not sector_df.empty and 'pct_chg' in sector_df.columns:
-                    sector_chg = sector_df['pct_chg'].iloc[-5:].sum()
-                else:
-                    sector_chg = 1.0
-            else:
-                sector_chg = 1.0
-            
-            relative_strength = (stock_chg + 10) / (sector_chg + 10) if sector_chg > -10 else 1.0
+            rank_score = 50
         
-        strength_score = min(100, relative_strength * 50)
+        # 2. 相对强度得分（50%）：个股涨幅 vs 板块平均涨幅
+        avg_pct = sum([m.get('pct_chg', 0) for m in members]) / len(members)
         
-        # 2. 市值和流动性（简化版，需要从Tushare获取）
-        # 默认给中等分数
-        market_cap_score = 50
-        liquidity_score = 50
+        if avg_pct != 0:
+            relative_strength = (stock_pct - avg_pct) / abs(avg_pct) * 50
+            strength_score = min(100, max(0, 50 + relative_strength))
+        else:
+            strength_score = 50
         
-        total_score = strength_score * 0.40 + market_cap_score * 0.30 + liquidity_score * 0.30
+        # 综合得分
+        total_score = rank_score * 0.50 + strength_score * 0.50
         return round(total_score, 2)
         
     except Exception as e:
-        print(f"计算龙头识别得分失败: {e}")
+        print(f"计算龙头识别得分失败 {stock_code}: {e}")
         return 50.0
 
 def calculate_trend_score(df: pd.DataFrame) -> float:
