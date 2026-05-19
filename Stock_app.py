@@ -2961,12 +2961,26 @@ def calculate_full_score(
         "user_weights": user_weights
     }
 
-def get_stock_score(ts_code: str, stock_name: str = "", tech_weights: Dict = None, sector_code: str = None, sector_name: str = None) -> Dict:
+def get_stock_score(ts_code: str, stock_name: str = "", module_weights: Dict = None, sector_name: str = None) -> Dict:
     """
     获取个股综合评分（完整版：板块热度+龙头识别+技术指标+趋势）
-    支持传入板块信息以提高评分准确性
+    module_weights: 包含4层权重的字典（板块热度、龙头识别、技术指标、趋势）
+    sector_name: 板块名称
     """
-    result = calculate_full_score(ts_code, sector_code, sector_name, tech_weights)
+    # 如果没有传入模块权重，使用默认值（个股分析风格）
+    if module_weights is None:
+        module_weights = {
+            "sector_heat": 0.25,
+            "leader": 0.15,
+            "technical": 0.40,
+            "trend": 0.20,
+            "tech_weights": TECH_WEIGHTS  # 技术指标子权重
+        }
+    elif "tech_weights" not in module_weights:
+        # 如果模块权重中没有技术指标子权重，添加默认值
+        module_weights["tech_weights"] = TECH_WEIGHTS
+    
+    result = calculate_full_score(ts_code, sector_name=sector_name, user_weights=module_weights)
     result["stock_code"] = ts_code
     result["stock_name"] = stock_name if stock_name else get_stock_name_from_tushare(ts_code)
     result["reasons"] = generate_score_reasons(result["total_score"])
@@ -2986,12 +3000,15 @@ def generate_score_reasons(score: float) -> str:
     else:
         return "技术指标空头，建议回避"
 
-
-def score_batch_stocks(stock_list: List[Dict], tech_weights: Dict = None) -> List[Dict]:
-    """批量计算股票得分，支持自定义权重"""
+#--------------
+def score_batch_stocks(stock_list: List[Dict], module_weights: Dict = None) -> List[Dict]:
+    """
+    批量计算股票得分
+    module_weights: 包含4层权重的字典
+    """
     results = []
     for stock in stock_list:
-        score_result = get_stock_score(stock["code"], stock.get("name", ""), tech_weights)
+        score_result = get_stock_score(stock["code"], stock.get("name", ""), module_weights=module_weights)
         results.append(score_result)
     return sorted(results, key=lambda x: x["total_score"], reverse=True)
 
@@ -4136,7 +4153,8 @@ def render_recommended_pool():
     
     with st.spinner("正在计算股票评分..."):
         stock_list = [{"code": s["stock_code"], "name": s.get("stock_name", "")} for s in stocks]
-        scored_stocks = score_batch_stocks(stock_list, module_weights)
+        # 🔧 修复：显式使用参数名
+        scored_stocks = score_batch_stocks(stock_list, module_weights=module_weights)
     
     for idx, stock in enumerate(scored_stocks):
         with st.container(border=True):
