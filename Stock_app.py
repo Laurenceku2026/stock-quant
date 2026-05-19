@@ -1761,6 +1761,10 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
     st.write("🔍 [DEBUG] ========== auto_recommend_top10 开始 ==========")
     st.write("🚀 从缓存读取板块数据...")
     
+    # 🔧 获取推荐股票池的模块权重（40%/30%/20%/10%）
+    module_weights = get_module_weights("recommended")
+    st.write(f"🔍 推荐股票池权重: {module_weights}")
+    
     # 1. 从缓存读取板块（复用原有的 load_sector_cache）
     sectors = load_sector_cache()
     st.write(f"🔍 [DEBUG] load_sector_cache 返回 {len(sectors)} 个板块")
@@ -1826,8 +1830,8 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
             test_score = calculate_leader_score(ts_code, sector_name)
             st.write(f"🔍 [DEBUG] calculate_leader_score 返回: {test_score}")
             
-            # 🔧 修复：显式传入 sector_name
-            score_result = get_stock_score(ts_code, stock_name, sector_name=sector_name)
+            # 🔧 关键修复：传入模块权重
+            score_result = get_stock_score(ts_code, stock_name, module_weights=module_weights, sector_name=sector_name)
             
             all_scored_stocks.append({
                 "code": ts_code,
