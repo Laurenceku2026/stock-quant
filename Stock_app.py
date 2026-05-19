@@ -2702,7 +2702,7 @@ def calculate_sector_heat_score(sector_code: str = None, sector_name: str = None
     权重：占综合评分的 40%
     使用预置板块预设分数，快速稳定
     """
-    print(f"🔥 calculate_sector_heat_score 被调用，参数: sector_code={sector_code}, sector_name={sector_name}")
+    print(f"🔥 calculate_sector_heat_score 被调用: sector_code={sector_code}, sector_name={sector_name}")
     
     # 预置板块热度预设分数（根据市场热度手动调整）
     preset_scores = {
@@ -2713,59 +2713,26 @@ def calculate_sector_heat_score(sector_code: str = None, sector_name: str = None
         "机器人": 65
     }
     
+    # 确定最终的板块名称
+    final_name = sector_name if sector_name else sector_code
+    print(f"🔥 最终板块名称: {final_name}")
+    
     # 如果有板块名称且在预设中，返回预设分数
-    if sector_name and sector_name in preset_scores:
-        score = preset_scores[sector_name]
-        print(f"📊 板块 {sector_name} 热度得分: {score}")
+    if final_name and final_name in preset_scores:
+        score = preset_scores[final_name]
+        print(f"📊 板块 {final_name} 热度得分: {score}")
         return float(score)
     
-    # 如果有板块代码（备用），尝试匹配
-    if sector_code:
+    # 尝试模糊匹配（备用）
+    if final_name:
         for name, score in preset_scores.items():
-            if sector_code in name or name in str(sector_code):
-                print(f"📊 板块 {sector_code} 匹配到 {name}，得分: {score}")
+            if name in final_name or final_name in name:
+                print(f"📊 板块 {final_name} 模糊匹配到 {name}，得分: {score}")
                 return float(score)
     
     # 默认返回50分
-    print(f"⚠️ 未找到板块 {sector_name or sector_code} 的热度预设，返回默认值50")
+    print(f"⚠️ 未找到板块 {final_name} 的热度预设，返回默认值50")
     return 50.0
-    
-    try:
-        # 如果没有板块信息，返回默认分
-        if not sector_code and not sector_name:
-            return 50.0
-        
-        # 尝试获取板块行情
-        if sector_code:
-            df = get_tushare_concept_daily(sector_code, days=20)
-        else:
-            # 如果没有代码，尝试按名称查找
-            concepts = get_tushare_concept_list()
-            for c in concepts:
-                if c.get('name') == sector_name:
-                    sector_code = c.get('code')
-                    break
-            if sector_code:
-                df = get_tushare_concept_daily(sector_code, days=20)
-            else:
-                return 50.0
-        
-        if df.empty or len(df) < 5:
-            return 50.0
-        
-        # 计算价格强度得分（涨跌幅）
-        if 'pct_chg' in df.columns:
-            chg_5d = df['pct_chg'].iloc[-5:].sum() if len(df) >= 5 else 0
-            # 涨跌幅映射到0-100分（涨10%得100分，跌10%得0分）
-            price_score = min(100, max(0, (chg_5d + 10) * 5))
-        else:
-            price_score = 50
-        
-        return round(price_score, 2)
-        
-    except Exception as e:
-        print(f"计算板块热度得分失败: {e}")
-        return 50.0
 #------------------
 
 def calculate_leader_score(stock_code: str, sector_name: str = None) -> float:
