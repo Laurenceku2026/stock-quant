@@ -2774,34 +2774,28 @@ def calculate_leader_score(stock_code: str, sector_name: str = None) -> float:
     权重：占综合评分的 30%
     从数据库缓存动态读取（每日更新）
     """
-    print(f"👑 calculate_leader_score 被调用，参数: stock_code={stock_code}, sector_code={sector_code}")
-    st.write(f"🔍 [DEBUG] calculate_leader_score 被调用: stock_code={stock_code}, sector_code={sector_code}")
+    print(f"👑 calculate_leader_score 被调用，参数: stock_code={stock_code}, sector_name={sector_name}")
+    
     if not sector_name:
-        st.write(f"🔍 [DEBUG] sector_code 为空，返回 50")
+        print(f"⚠️ sector_name 为空，返回 50")
         return 50.0
     
     try:
-        # 1. 从缓存读取板块成分股（sector_code 实际是板块名称）
+        # 从缓存读取板块成分股
         members = get_sector_members_from_cache(sector_name, limit=50)
-        st.write(f"🔍 [DEBUG] get_sector_members_from_cache 返回 {len(members)} 个成员")
         
         if members:
-            # 查找股票排名
             for idx, member in enumerate(members):
                 if member.get('stock_code') == stock_code:
                     rank = idx + 1
                     score = 100 * (1 - rank / len(members))
-                    print(f"👑 股票 {stock_code} 在板块 {sector_code} 中排名 {rank}/{len(members)}，得分: {score:.2f}")
-                    st.write(f"🔍 [DEBUG] 找到匹配! rank={rank}, score={score}")
+                    print(f"✅ 找到排名 {rank}/{len(members)}，得分 {score}")
                     return round(score, 2)
-            print(f"⚠️ 股票 {stock_code} 不在板块 {sector_code} 的缓存中")
-            st.write(f"🔍 [DEBUG] 股票 {stock_code} 不在成员列表中")
+            print(f"⚠️ 股票 {stock_code} 不在板块 {sector_name} 的缓存中")
             return 50.0
         else:
-            # 2. 缓存为空，使用预置数据降级
             print(f"⚠️ 缓存为空，使用预置数据降级")
-            st.write(f"🔍 [DEBUG] members 为空，返回 50")
-            return get_leader_score_fallback(stock_code, sector_code)
+            return get_leader_score_fallback(stock_code, sector_name)
             
     except Exception as e:
         print(f"❌ 计算龙头识别得分失败: {e}")
@@ -2815,9 +2809,7 @@ def get_leader_score_fallback(stock_code: str, sector_name: str) -> float:
         for idx, code in enumerate(stocks):
             if code == stock_code:
                 score = 100 * (1 - idx / len(stocks))
-                print(f"📋 降级: 股票 {stock_code} 在板块 {sector_name} 中得分: {score:.2f}")
                 return round(score, 2)
-    print(f"📋 降级: 未找到股票 {stock_code} 在板块 {sector_name} 的预置数据")
     return 50.0
 
 def calculate_trend_score(df: pd.DataFrame) -> float:
