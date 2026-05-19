@@ -101,6 +101,49 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ==================== 自定义CSS ====================
+st.markdown("""
+<style>
+    .main-header {
+        text-align: center;
+        margin-bottom: 1rem;
+    }
+    
+    .sidebar-user-info {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin-bottom: 1rem;
+    }
+    
+    .stButton button {
+        border-radius: 0.5rem;
+        transition: all 0.2s;
+    }
+    
+    .stDataFrame {
+        font-size: 0.9rem;
+    }
+    
+    .stMetric {
+        text-align: center;
+    }
+    
+    .signal-s { color: #ff4b4b; font-weight: bold; }
+    .signal-a { color: #ff6b6b; font-weight: bold; }
+    .signal-b { color: #ffaa00; font-weight: bold; }
+    .signal-c { color: #ff8800; font-weight: bold; }
+    .signal-d { color: #888888; font-weight: bold; }
+    
+    .market-selector {
+        margin-bottom: 1rem;
+        padding: 0.5rem;
+        background-color: #f8f9fa;
+        border-radius: 0.5rem;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # ==================== 强制初始化 Session State（必须在任何其他代码之前） ====================
 if "kdj_k_fallback" not in st.session_state:
     st.session_state.kdj_k_fallback = 50
@@ -2836,20 +2879,21 @@ def calculate_full_score(
     sector_name: str = None,
     user_weights: Dict = None
 ) -> Dict:
-    """
-    完整评分引擎
-    支持4层权重：板块热度、龙头识别、技术指标、长短期趋势
-    """
-    # 如果没有传入权重，使用默认值（个股分析风格）
+    # 🔴 强制显示调试信息
+    st.write(f"🚨🚨🚨 calculate_full_score 被调用: ts_code={ts_code}, sector_name={sector_name}")
+    
+    # 如果没有传入权重，使用默认值
     if user_weights is None:
         user_weights = {"sector_heat": 0.25, "leader": 0.15, "technical": 0.40, "trend": 0.20}
     
     # 1. 板块热度得分
+    st.write(f"🔥 准备调用 calculate_sector_heat_score, sector_name={sector_name}")
     sector_heat_score = calculate_sector_heat_score(sector_code, sector_name)
+    st.write(f"🔥 calculate_sector_heat_score 返回: {sector_heat_score}")
     
     # 2. 龙头识别得分
     leader_score = calculate_leader_score(ts_code, sector_name if sector_name else sector_code)
-    
+   
     # 3. 技术指标得分 + 趋势得分
     df = get_stock_daily(ts_code, days=120)
     
@@ -5406,7 +5450,7 @@ def render_admin_panel():
     
     # 数据管理（股票列表同步）
     st.markdown("### 📊 数据管理")
-    col1, col2 = st.columns(2)
+    col1, col2 = st.columns(3)
     with col1:
         if st.button("🔄 同步股票列表", key="sync_stocks", use_container_width=True):
             with st.spinner("正在同步股票列表（可能需要1分钟）..."):
@@ -5756,49 +5800,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-# ==================== 自定义CSS ====================
-st.markdown("""
-<style>
-    .main-header {
-        text-align: center;
-        margin-bottom: 1rem;
-    }
-    
-    .sidebar-user-info {
-        background-color: #f0f2f6;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        margin-bottom: 1rem;
-    }
-    
-    .stButton button {
-        border-radius: 0.5rem;
-        transition: all 0.2s;
-    }
-    
-    .stDataFrame {
-        font-size: 0.9rem;
-    }
-    
-    .stMetric {
-        text-align: center;
-    }
-    
-    .signal-s { color: #ff4b4b; font-weight: bold; }
-    .signal-a { color: #ff6b6b; font-weight: bold; }
-    .signal-b { color: #ffaa00; font-weight: bold; }
-    .signal-c { color: #ff8800; font-weight: bold; }
-    .signal-d { color: #888888; font-weight: bold; }
-    
-    .market-selector {
-        margin-bottom: 1rem;
-        padding: 0.5rem;
-        background-color: #f8f9fa;
-        border-radius: 0.5rem;
-    }
-</style>
-""", unsafe_allow_html=True)
-
 
 print("第5部分加载完成")
 print("=" * 60)
