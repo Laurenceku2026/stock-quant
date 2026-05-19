@@ -3016,7 +3016,17 @@ def score_batch_stocks(stock_list: List[Dict], module_weights: Dict = None) -> L
     """
     results = []
     for stock in stock_list:
-        score_result = get_stock_score(stock["code"], stock.get("name", ""), module_weights=module_weights)
+        # 注意：这里的 stock 可能没有 sector_name 信息
+        # 需要从数据库中获取该股票所属的板块
+        sector_name = stock.get('sector_name')  # 尝试获取
+        if not sector_name:
+            # 如果 stock 中没有，尝试从 HOT_SECTORS 查找
+            for sec_name, sec_info in HOT_SECTORS.items():
+                if stock["code"] in sec_info.get("stocks", []):
+                    sector_name = sec_name
+                    break
+        
+        score_result = get_stock_score(stock["code"], stock.get("name", ""), module_weights=module_weights, sector_name=sector_name)
         results.append(score_result)
     return sorted(results, key=lambda x: x["total_score"], reverse=True)
 
