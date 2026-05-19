@@ -1715,11 +1715,12 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
     自动推荐Top10股票
     从缓存读取板块和成分股（快速，不调用 Tushare API）
     """
+    st.write("🔍 [DEBUG] ========== auto_recommend_top10 开始 ==========")
     st.write("🚀 从缓存读取板块数据...")
     
     # 1. 从缓存读取板块（复用原有的 load_sector_cache）
     sectors = load_sector_cache()
-    
+    st.write(f"🔍 [DEBUG] load_sector_cache 返回 {len(sectors)} 个板块")
     if not sectors:
         st.write("⚠️ 板块缓存为空，使用预置板块")
         return auto_recommend_top10_fallback(user_id, access_token)
@@ -1766,6 +1767,12 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
                 continue
             
             # 3. 计算评分（传入板块名称）
+            st.write(f"🔍 [DEBUG] 准备评分: ts_code={ts_code}, stock_name={stock_name}, sector_name={sector_name}")
+
+            # 临时测试：直接打印 calculate_leader_score 的返回值
+            test_score = calculate_leader_score(ts_code, sector_name)
+            st.write(f"🔍 [DEBUG] calculate_leader_score 返回: {test_score}")
+            
             score_result = get_stock_score(ts_code, stock_name, sector_name=sector_name)
             
             all_scored_stocks.append({
@@ -2768,13 +2775,15 @@ def calculate_leader_score(stock_code: str, sector_code: str = None) -> float:
     从数据库缓存动态读取（每日更新）
     """
     print(f"👑 calculate_leader_score 被调用，参数: stock_code={stock_code}, sector_code={sector_code}")
-    
+    st.write(f"🔍 [DEBUG] calculate_leader_score 被调用: stock_code={stock_code}, sector_code={sector_code}")
     if not sector_code:
+        st.write(f"🔍 [DEBUG] sector_code 为空，返回 50")
         return 50.0
     
     try:
         # 1. 从缓存读取板块成分股（sector_code 实际是板块名称）
         members = get_sector_members_from_cache(sector_code, limit=50)
+        st.write(f"🔍 [DEBUG] get_sector_members_from_cache 返回 {len(members)} 个成员")
         
         if members:
             # 查找股票排名
@@ -2783,12 +2792,15 @@ def calculate_leader_score(stock_code: str, sector_code: str = None) -> float:
                     rank = idx + 1
                     score = 100 * (1 - rank / len(members))
                     print(f"👑 股票 {stock_code} 在板块 {sector_code} 中排名 {rank}/{len(members)}，得分: {score:.2f}")
+                    st.write(f"🔍 [DEBUG] 找到匹配! rank={rank}, score={score}")
                     return round(score, 2)
             print(f"⚠️ 股票 {stock_code} 不在板块 {sector_code} 的缓存中")
+            st.write(f"🔍 [DEBUG] 股票 {stock_code} 不在成员列表中")
             return 50.0
         else:
             # 2. 缓存为空，使用预置数据降级
             print(f"⚠️ 缓存为空，使用预置数据降级")
+            st.write(f"🔍 [DEBUG] members 为空，返回 50")
             return get_leader_score_fallback(stock_code, sector_code)
             
     except Exception as e:
