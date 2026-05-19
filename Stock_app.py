@@ -2971,6 +2971,8 @@ def get_stock_score(ts_code: str, stock_name: str = "", module_weights: Dict = N
     module_weights: 包含4层权重的字典（板块热度、龙头识别、技术指标、趋势）
     sector_name: 板块名称
     """
+    st.write(f"🚨🚨🚨 get_stock_score 内部: sector_name={sector_name}")
+    st.write(f"📊 get_stock_score 接收: ts_code={ts_code}, sector_name={sector_name}, module_weights={module_weights}")
     # 如果没有传入模块权重，使用默认值（个股分析风格）
     if module_weights is None:
         module_weights = {
