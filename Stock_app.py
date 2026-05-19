@@ -1764,6 +1764,12 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
     # 1. 从缓存读取板块（复用原有的 load_sector_cache）
     sectors = load_sector_cache()
     st.write(f"🔍 [DEBUG] load_sector_cache 返回 {len(sectors)} 个板块")
+    
+    # 调试：查看第一个板块的字段
+    if sectors:
+        st.write(f"🔍 第一个板块的字段: {list(sectors[0].keys())}")
+        st.write(f"🔍 第一个板块内容: {sectors[0]}")
+    
     if not sectors:
         st.write("⚠️ 板块缓存为空，使用预置板块")
         return auto_recommend_top10_fallback(user_id, access_token)
@@ -1779,9 +1785,13 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
     all_scored_stocks = []
     
     for sector in hot_sectors:
-        sector_name = sector.get('sector_name')
+        # 🔧 修复：尝试多种可能的字段名
+        sector_name = sector.get('sector_name') or sector.get('name') or sector.get('sector')
         if not sector_name:
+            st.write(f"⚠️ 无法获取板块名称，跳过: {sector}")
             continue
+        
+        st.write(f"🔍 处理板块: {sector_name}")
         
         # 2. 从缓存读取板块成分股（使用新函数）
         members = get_sector_members_from_cache(sector_name, limit=10)
@@ -1800,6 +1810,7 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
                         "stock_name": name
                     })
             else:
+                st.write(f"⚠️ 板块 {sector_name} 无成分股数据")
                 continue
         
         for member in members[:5]:  # 每个板块取前5只
@@ -1809,13 +1820,13 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
             if not ts_code:
                 continue
             
-            # 3. 计算评分（传入板块名称）
             st.write(f"🔍 [DEBUG] 准备评分: ts_code={ts_code}, stock_name={stock_name}, sector_name={sector_name}")
 
             # 临时测试：直接打印 calculate_leader_score 的返回值
             test_score = calculate_leader_score(ts_code, sector_name)
             st.write(f"🔍 [DEBUG] calculate_leader_score 返回: {test_score}")
             
+            # 🔧 修复：显式传入 sector_name
             score_result = get_stock_score(ts_code, stock_name, sector_name=sector_name)
             
             all_scored_stocks.append({
@@ -1826,6 +1837,7 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
             })
     
     if not all_scored_stocks:
+        st.write("⚠️ 没有获取到任何评分股票，使用预置板块")
         return auto_recommend_top10_fallback(user_id, access_token)
     
     # 4. 去重并排序
@@ -1852,6 +1864,7 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
             score=stock["score"], access_token=access_token
         )
     
+    st.write(f"✅ 推荐完成，共 {len(top10)} 只股票")
     return top10
 
 
