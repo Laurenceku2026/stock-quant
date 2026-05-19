@@ -2929,6 +2929,13 @@ def calculate_full_score(
         tech_score * user_weights.get("technical", 0.40) +
         trend_score * user_weights.get("trend", 0.20)
     )
+    # 🔧 添加调试输出
+    st.write(f"📊 总分计算详情:")
+    st.write(f"   sector_heat_score={sector_heat_score} × {user_weights.get('sector_heat', 0.25)} = {sector_heat_score * user_weights.get('sector_heat', 0.25)}")
+    st.write(f"   leader_score={leader_score} × {user_weights.get('leader', 0.15)} = {leader_score * user_weights.get('leader', 0.15)}")
+    st.write(f"   tech_score={tech_score} × {user_weights.get('technical', 0.40)} = {tech_score * user_weights.get('technical', 0.40)}")
+    st.write(f"   trend_score={trend_score} × {user_weights.get('trend', 0.20)} = {trend_score * user_weights.get('trend', 0.20)}")
+    st.write(f"   总分 = {total_score}")
     
     # 确定等级
     level = "D"
