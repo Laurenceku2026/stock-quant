@@ -2768,7 +2768,7 @@ def calculate_sector_heat_score(sector_code: str = None, sector_name: str = None
         return 50.0
 #------------------
 
-def calculate_leader_score(stock_code: str, sector_code: str = None) -> float:
+def calculate_leader_score(stock_code: str, sector_name: str = None) -> float:
     """
     计算龙头识别得分
     权重：占综合评分的 30%
@@ -2776,13 +2776,13 @@ def calculate_leader_score(stock_code: str, sector_code: str = None) -> float:
     """
     print(f"👑 calculate_leader_score 被调用，参数: stock_code={stock_code}, sector_code={sector_code}")
     st.write(f"🔍 [DEBUG] calculate_leader_score 被调用: stock_code={stock_code}, sector_code={sector_code}")
-    if not sector_code:
+    if not sector_name:
         st.write(f"🔍 [DEBUG] sector_code 为空，返回 50")
         return 50.0
     
     try:
         # 1. 从缓存读取板块成分股（sector_code 实际是板块名称）
-        members = get_sector_members_from_cache(sector_code, limit=50)
+        members = get_sector_members_from_cache(sector_name, limit=50)
         st.write(f"🔍 [DEBUG] get_sector_members_from_cache 返回 {len(members)} 个成员")
         
         if members:
@@ -2889,7 +2889,7 @@ def calculate_full_score(
     sector_heat_score = calculate_sector_heat_score(sector_code, sector_name)
     
     # 2. 龙头识别得分
-    leader_score = calculate_leader_score(ts_code, sector_code)
+    leader_score = calculate_leader_score(ts_code, sector_name if sector_name else sector_code)
     
     # 3. 技术指标得分 + 趋势得分
     df = get_stock_daily(ts_code, days=120)
