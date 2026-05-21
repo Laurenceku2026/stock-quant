@@ -4180,6 +4180,9 @@ def render_recommended_pool():
             
             with col1:
                 st.markdown(f"**{stock['stock_code']}**")
+                # 调试：打印 stock 字典的内容
+                st.write(f"🔍 调试: stock 字典 = {stock}")
+                st.write(f"🔍 调试: stock['stock_name'] = '{stock.get('stock_name')}'")
                 st.caption(stock['stock_name'])
             
             with col2:
