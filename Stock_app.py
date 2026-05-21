@@ -1402,7 +1402,152 @@ def get_user_hot_sectors_from_db(user_id: str, access_token: str = None) -> List
     except Exception as e:
         print(f"获取用户热点板块失败: {e}")
         return []
+# ==================== 龙头股缓存函数 ====================
 
+def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple[bool, str]:
+    """
+    计算用户所有热点板块的龙头股，并保存到缓存表
+    返回: (success, message)
+    """
+    if not user_id or user_id == "admin":
+        return False, "无效用户"
+    
+    try:
+        # 获取用户的"我的热点板块"
+        preset_sectors = get_user_preset_sectors_from_db(user_id, access_token)
+        
+        if not preset_sectors:
+            return False, "没有热点板块"
+        
+        headers = get_supabase_headers(use_secret=True)
+        url = f"{SUPABASE_URL}/rest/v1/user_leader_stocks_cache"
+        
+        # 先删除该用户的旧缓存数据
+        requests.delete(url, headers=headers, params=f"user_id=eq.{user_id}")
+        
+        leader_count = 0
+        
+        for sector in preset_sectors[:10]:  # 最多10个板块
+            sector_name = sector.get('sector_name')
+            if not sector_name:
+                continue
+            
+            # 获取板块成分股
+            members = get_sector_members_from_cache(sector_name, limit=10)
+            if not members:
+                members = get_sector_members_fallback(sector_name, limit=10)
+            
+            if members:
+                # 计算每只股票的涨跌幅（最近5日）
+                stock_performance = []
+                for member in members[:10]:
+                    ts_code = member.get('stock_code')
+                    stock_name = member.get('stock_name')
+                    if not ts_code:
+                        continue
+                    
+                    # 获取股票名称
+                    if not stock_name or stock_name == ts_code:
+                        stock_name = get_stock_name_from_tushare(ts_code)
+                    
+                    # 计算涨跌幅（最近5日）
+                    try:
+                        df = get_stock_daily(ts_code, days=5)
+                        if not df.empty and len(df) >= 2:
+                            pct_chg = (df['close'].iloc[-1] - df['close'].iloc[-2]) / df['close'].iloc[-2] * 100
+                            stock_performance.append({
+                                "code": ts_code,
+                                "name": stock_name,
+                                "pct_chg": pct_chg
+                            })
+                        else:
+                            stock_performance.append({
+                                "code": ts_code,
+                                "name": stock_name,
+                                "pct_chg": 0
+                            })
+                    except:
+                        stock_performance.append({
+                            "code": ts_code,
+                            "name": stock_name,
+                            "pct_chg": 0
+                        })
+                
+                # 按涨跌幅排序，取第一名作为龙头股
+                if stock_performance:
+                    stock_performance.sort(key=lambda x: x.get('pct_chg', 0), reverse=True)
+                    leader = stock_performance[0]
+                    
+                    # 保存到缓存表
+                    data = {
+                        "user_id": user_id,
+                        "sector_name": sector_name,
+                        "leader_code": leader.get('code', ''),
+                        "leader_name": leader.get('name', ''),
+                        "leader_pct": round(leader.get('pct_chg', 0), 2),
+                        "calculated_at": datetime.now().isoformat()
+                    }
+                    response = requests.post(url, headers=headers, json=data)
+                    if response.status_code in [200, 201]:
+                        leader_count += 1
+        
+        print(f"✅ 用户 {user_id} 龙头股缓存已更新，共 {leader_count} 个板块")
+        return True, f"龙头股已更新，共 {leader_count} 个板块"
+        
+    except Exception as e:
+        print(f"保存龙头股缓存失败: {e}")
+        return False, f"保存失败: {str(e)}"
+
+
+def get_leader_stocks_from_cache(user_id: str, access_token: str = None) -> List[Dict]:
+    """
+    从缓存读取用户的龙头股数据
+    返回: [{"sector_name": "光模块/CPO", "leader_name": "中际旭创", "leader_pct": 5.2}, ...]
+    """
+    if not user_id or user_id == "admin":
+        return []
+    
+    try:
+        headers = get_supabase_headers(access_token=access_token) if access_token else get_supabase_headers(use_secret=True)
+        url = f"{SUPABASE_URL}/rest/v1/user_leader_stocks_cache?user_id=eq.{user_id}&order=sector_name.asc"
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code == 200:
+            return response.json()
+        return []
+    except Exception as e:
+        print(f"读取龙头股缓存失败: {e}")
+        return []
+
+
+def refresh_leader_stocks_for_user(user_id: str, access_token: str = None) -> Tuple[bool, str]:
+    """
+    刷新指定用户的龙头股缓存（供手动刷新和定时任务调用）
+    """
+    return save_leader_stocks_to_cache(user_id, access_token)
+
+
+def refresh_leader_stocks_for_all_users() -> Tuple[bool, str]:
+    """
+    为所有用户刷新龙头股缓存（供定时任务调用）
+    """
+    try:
+        users = get_all_users()
+        if not users:
+            return False, "没有找到任何用户"
+        
+        success_count = 0
+        for user in users:
+            user_id = user.get('user_id')
+            if user_id and user_id != "admin":
+                success, msg = save_leader_stocks_to_cache(user_id)
+                if success:
+                    success_count += 1
+        
+        return True, f"已为 {success_count} 个用户更新龙头股缓存"
+        
+    except Exception as e:
+        return False, f"批量更新失败: {str(e)}"
 
 print("第1部分加载完成")
 print("=" * 60)
@@ -4505,101 +4650,66 @@ def render_market_brief():
     # ==================== 动态龙头股关注模块 ====================
     with st.container():
         st.markdown("#### 🎯 龙头股关注")
-        st.caption("基于您的「我的热点板块」，实时计算的领涨龙头股")
+        st.caption("基于您的「我的热点板块」，实时计算的领涨龙头股（每日自动更新）")
         
-        # 获取用户的"我的热点板块"（source='user'）
-        preset_sectors = get_user_preset_sectors_from_db(
+        # 刷新按钮
+        col_refresh1, col_refresh2, col_refresh3 = st.columns([3, 1, 3])
+        with col_refresh2:
+            if st.button("🔄 刷新龙头股", key="refresh_leader_stocks", use_container_width=True):
+                with st.spinner("正在重新计算龙头股..."):
+                    success, msg = refresh_leader_stocks_for_user(
+                        st.session_state.user_id,
+                        st.session_state.get("access_token")
+                    )
+                    if success:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+        
+        # 从缓存读取龙头股数据
+        leader_stocks = get_leader_stocks_from_cache(
             st.session_state.user_id,
             st.session_state.get("access_token")
         )
         
-        if not preset_sectors:
-            # 如果没有热点板块，显示默认提示
-            st.info("暂无热点板块，请在上方「我的热点板块」中添加")
-        else:
-            # 获取每个板块的龙头股
-            leader_data = []
-            
-            for sector in preset_sectors[:10]:  # 最多显示10个板块
-                sector_name = sector.get('sector_name')
-                if not sector_name:
-                    continue
-                
-                # 获取板块成分股
-                members = get_sector_members_from_cache(sector_name, limit=10)
-                if not members:
-                    members = get_sector_members_fallback(sector_name, limit=10)
-                
-                if members:
-                    # 计算每只股票的涨跌幅（简化版：用最近5日涨幅）
-                    stock_performance = []
-                    for member in members[:10]:
-                        ts_code = member.get('stock_code')
-                        stock_name = member.get('stock_name')
-                        if not ts_code:
-                            continue
-                        
-                        # 获取股票名称
-                        if not stock_name or stock_name == ts_code:
-                            stock_name = get_stock_name_from_tushare(ts_code)
-                        
-                        # 计算涨跌幅（最近5日）
-                        try:
-                            df = get_stock_daily(ts_code, days=5)
-                            if not df.empty and len(df) >= 2:
-                                pct_chg = (df['close'].iloc[-1] - df['close'].iloc[-2]) / df['close'].iloc[-2] * 100
-                                stock_performance.append({
-                                    "code": ts_code,
-                                    "name": stock_name,
-                                    "pct_chg": pct_chg
-                                })
-                            else:
-                                stock_performance.append({
-                                    "code": ts_code,
-                                    "name": stock_name,
-                                    "pct_chg": 0
-                                })
-                        except:
-                            stock_performance.append({
-                                "code": ts_code,
-                                "name": stock_name,
-                                "pct_chg": 0
-                            })
-                    
-                    # 按涨跌幅排序，取第一名作为龙头股
-                    if stock_performance:
-                        stock_performance.sort(key=lambda x: x.get('pct_chg', 0), reverse=True)
-                        leader = stock_performance[0]
-                        leader_name = leader.get('name', '')
-                        leader_pct = leader.get('pct_chg', 0)
-                        
-                        # 格式化涨跌幅显示
-                        if leader_pct > 0:
-                            pct_display = f"🟢 +{leader_pct:.2f}%"
-                        elif leader_pct < 0:
-                            pct_display = f"🔴 {leader_pct:.2f}%"
-                        else:
-                            pct_display = f"⚪ 0.00%"
-                        
-                        leader_data.append({
-                            "sector_name": sector_name,
-                            "leader_name": leader_name,
-                            "leader_pct": pct_display
-                        })
-                    else:
-                        leader_data.append({
-                            "sector_name": sector_name,
-                            "leader_name": "--",
-                            "leader_pct": "--"
-                        })
+        if not leader_stocks:
+            # 如果没有缓存数据，尝试生成
+            with st.spinner("正在生成龙头股数据..."):
+                success, msg = save_leader_stocks_to_cache(
+                    st.session_state.user_id,
+                    st.session_state.get("access_token")
+                )
+                if success:
+                    leader_stocks = get_leader_stocks_from_cache(
+                        st.session_state.user_id,
+                        st.session_state.get("access_token")
+                    )
                 else:
-                    leader_data.append({
-                        "sector_name": sector_name,
-                        "leader_name": "--",
-                        "leader_pct": "--"
-                    })
+                    st.info("暂无龙头股数据，请先添加热点板块")
+        
+        if leader_stocks:
+            # 显示龙头股列表（卡片式布局）
+            leader_data = []
+            for item in leader_stocks:
+                sector_name = item.get('sector_name', '')
+                leader_name = item.get('leader_name', '--')
+                leader_pct = item.get('leader_pct', 0)
+                
+                # 格式化涨跌幅显示
+                if leader_pct > 0:
+                    pct_display = f"🟢 +{leader_pct:.2f}%"
+                elif leader_pct < 0:
+                    pct_display = f"🔴 {leader_pct:.2f}%"
+                else:
+                    pct_display = f"⚪ 0.00%"
+                
+                leader_data.append({
+                    "sector_name": sector_name,
+                    "leader_name": leader_name,
+                    "leader_pct": pct_display
+                })
             
-            # 显示龙头股列表
             if leader_data:
                 # 使用列布局显示，每行显示2个
                 cols_per_row = 2
@@ -4618,9 +4728,18 @@ def render_market_brief():
                                 </div>
                                 """, unsafe_allow_html=True)
                 
+                # 显示最后更新时间
+                if leader_stocks:
+                    last_update = leader_stocks[0].get('calculated_at', '')
+                    if last_update:
+                        st.caption(f"📅 数据更新时间: {last_update[:16]}")
+                
                 st.caption("💡 龙头股按最近5日涨跌幅排序，取板块内涨幅最高的股票")
+                st.caption("📌 点击刷新按钮可重新计算龙头股")
             else:
                 st.caption("暂无龙头股数据")
+        else:
+            st.info("暂无龙头股数据，请先在上方「我的热点板块」中添加板块")
         
         st.markdown("---")
 
@@ -4712,7 +4831,7 @@ def render_recommended_pool():
     if not stocks:
         st.info("暂无股票，请点击[添加]按钮添加股票，或点击[刷新]获取AI推荐")
         return
-    
+    #---
     # 获取推荐股票池模块的独立权重
     module_weights = get_module_weights("recommended")
     
