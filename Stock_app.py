@@ -4827,6 +4827,7 @@ def render_stock_analysis():
     if st.session_state.get("analyze_code"):
         stock_code = st.session_state.analyze_code
         stock_name = st.session_state.get("analyze_name", "")
+        st.markdown(f"### 📈 正在分析: **{stock_code}** ({stock_name})")   
         
         # 获取个股分析模块的独立权重
         module_weights = get_module_weights("stock_analysis")
