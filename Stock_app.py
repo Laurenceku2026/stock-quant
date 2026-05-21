@@ -52,17 +52,17 @@ def tushare_request_with_retry(func):
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                time.sleep(0.5) # 每次请求前暂停0.5秒，这是关键
+                time.sleep(0.5)
                 result = func(*args, **kwargs)
                 if result is not None and not (hasattr(result, 'empty') and result.empty):
                     return result
                 else:
                     print(f"Tushare请求返回空数据，尝试 {attempt+1}/{max_retries}")
-                    time.sleep(1) # 失败后等待1秒再重试
+                    time.sleep(1)
             except Exception as e:
                 print(f"Tushare请求错误 (尝试 {attempt+1}/{max_retries}): {e}")
-                time.sleep(2) # 出错后等待2秒
-        return None # 所有重试都失败后返回None
+                time.sleep(2)
+        return None
     return wrapper
 
 # ==================== 时区配置 ====================
@@ -1040,8 +1040,7 @@ def get_concept_stocks_tushare(concept_name: str) -> List[Dict]:
 
 def get_hot_concepts_tushare(limit: int = 10) -> List[Dict]:
     """获取热门概念板块列表（直接使用 concept 接口）"""
-    st.write("🔥 DEBUG: get_hot_concepts_tushare 被调用")
-    
+        
     if not TUSHARE_AVAILABLE:
         return []
     
@@ -1050,10 +1049,7 @@ def get_hot_concepts_tushare(limit: int = 10) -> List[Dict]:
         df = TUSHARE_PRO.concept()
         
         if df is None or df.empty:
-            st.write("❌ 概念板块数据为空")
             return []
-        
-        st.write(f"📊 获取到 {len(df)} 个概念板块")
         
         # 直接使用 concept 接口返回的涨跌幅数据
         hot_concepts = []
@@ -1073,11 +1069,9 @@ def get_hot_concepts_tushare(limit: int = 10) -> List[Dict]:
         hot_concepts.sort(key=lambda x: x.get('pct_chg', 0), reverse=True)
         result = hot_concepts[:limit]
         
-        st.write(f"✅ 返回前 {len(result)} 个热门板块")
         return result
         
     except Exception as e:
-        st.write(f"❌ 获取热门板块失败: {e}")
         return []
 
 
@@ -1758,52 +1752,37 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
     自动推荐Top10股票
     从缓存读取板块和成分股（快速，不调用 Tushare API）
     """
-    st.write("🔍 [DEBUG] ========== auto_recommend_top10 开始 ==========")
-    st.write("🚀 从缓存读取板块数据...")
-    
-    # 🔧 获取推荐股票池的模块权重（40%/30%/20%/10%）
+    # 获取推荐股票池的模块权重（40%/30%/20%/10%）
     module_weights = get_module_weights("recommended")
-    st.write(f"🔍 推荐股票池权重: {module_weights}")
     
-    # 1. 从缓存读取板块（复用原有的 load_sector_cache）
+    # 1. 从缓存读取板块
     sectors = load_sector_cache()
-    st.write(f"🔍 [DEBUG] load_sector_cache 返回 {len(sectors)} 个板块")
-    
-    # 调试：查看第一个板块的字段
-    if sectors:
-        st.write(f"🔍 第一个板块的字段: {list(sectors[0].keys())}")
-        st.write(f"🔍 第一个板块内容: {sectors[0]}")
     
     if not sectors:
-        st.write("⚠️ 板块缓存为空，使用预置板块")
         return auto_recommend_top10_fallback(user_id, access_token)
     
-    # 按热度排序（如果有热度字段）
+    # 按热度排序
     try:
         sectors.sort(key=lambda x: x.get('hot_score', 0), reverse=True)
     except:
         pass
     
     hot_sectors = sectors[:10]
-    
     all_scored_stocks = []
     
     for sector in hot_sectors:
-        # 🔧 修复：尝试多种可能的字段名
+        # 获取板块名称
         sector_name = sector.get('sector_name') or sector.get('name') or sector.get('sector')
         if not sector_name:
-            st.write(f"⚠️ 无法获取板块名称，跳过: {sector}")
             continue
         
-        st.write(f"🔍 处理板块: {sector_name}")
-        
-        # 2. 从缓存读取板块成分股（使用新函数）
+        # 从缓存读取板块成分股
         members = get_sector_members_from_cache(sector_name, limit=10)
         if not members:
             members = get_sector_members_fallback(sector_name, limit=10)
         
         if not members:
-            # 如果缓存没有成分股，尝试从预置板块获取
+            # 如果缓存没有成分股，从预置板块获取
             if sector_name in HOT_SECTORS:
                 sector_info = HOT_SECTORS[sector_name]
                 members = []
@@ -1814,37 +1793,29 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
                         "stock_name": name
                     })
             else:
-                st.write(f"⚠️ 板块 {sector_name} 无成分股数据")
                 continue
         
-        for member in members[:5]:  # 每个板块取前5只
+        for member in members[:5]:
             ts_code = member.get('stock_code')
             stock_name = member.get('stock_name')
             
             if not ts_code:
                 continue
             
-            st.write(f"🔍 [DEBUG] 准备评分: ts_code={ts_code}, stock_name={stock_name}, sector_name={sector_name}")
-
-            # 临时测试：直接打印 calculate_leader_score 的返回值
-            test_score = calculate_leader_score(ts_code, sector_name)
-            st.write(f"🔍 [DEBUG] calculate_leader_score 返回: {test_score}")
-            
-            # 🔧 关键修复：传入模块权重
+            # 计算评分
             score_result = get_stock_score(ts_code, stock_name, module_weights=module_weights, sector_name=sector_name)
             
             all_scored_stocks.append({
                 "code": ts_code,
-                "name": stock_name,
+                "name": stock_name if stock_name else get_stock_name_from_tushare(ts_code),
                 "score": score_result["total_score"],
                 "sector": sector_name
             })
     
     if not all_scored_stocks:
-        st.write("⚠️ 没有获取到任何评分股票，使用预置板块")
         return auto_recommend_top10_fallback(user_id, access_token)
     
-    # 4. 去重并排序
+    # 去重并排序
     seen = set()
     unique_stocks = []
     for stock in all_scored_stocks:
@@ -1855,20 +1826,19 @@ def auto_recommend_top10(user_id: str, access_token: str = None) -> List[Dict]:
     unique_stocks.sort(key=lambda x: x["score"], reverse=True)
     top10 = unique_stocks[:10]
     
-    # 5. 清空旧的AI推荐
+    # 清空旧的AI推荐
     existing_stocks = get_recommended_pool(user_id, access_token)
     for s in existing_stocks:
         if s.get("source") == "ai":
             supabase_request("DELETE", "recommended_pool", params=f"id=eq.{s['id']}", access_token=access_token)
     
-    # 6. 添加新的推荐
+    # 添加新的推荐
     for stock in top10:
         add_to_recommended_pool(
             user_id, stock["code"], stock["name"], source="ai",
             score=stock["score"], access_token=access_token
         )
     
-    st.write(f"✅ 推荐完成，共 {len(top10)} 只股票")
     return top10
 
 
@@ -2896,17 +2866,16 @@ def calculate_full_score(
     sector_name: str = None,
     user_weights: Dict = None
 ) -> Dict:
-    # 🔴 强制显示调试信息
-    st.write(f"🚨🚨🚨 calculate_full_score 被调用: ts_code={ts_code}, sector_name={sector_name}")
-    
-    # 如果没有传入权重，使用默认值
+    """
+    完整评分引擎
+    支持4层权重：板块热度、龙头识别、技术指标、长短期趋势
+    """
+    # 如果没有传入权重，使用默认值（个股分析风格）
     if user_weights is None:
         user_weights = {"sector_heat": 0.25, "leader": 0.15, "technical": 0.40, "trend": 0.20}
     
     # 1. 板块热度得分
-    st.write(f"🔥 准备调用 calculate_sector_heat_score, sector_name={sector_name}")
     sector_heat_score = calculate_sector_heat_score(sector_code, sector_name)
-    st.write(f"🔥 calculate_sector_heat_score 返回: {sector_heat_score}")
     
     # 2. 龙头识别得分
     leader_score = calculate_leader_score(ts_code, sector_name if sector_name else sector_code)
@@ -2914,7 +2883,6 @@ def calculate_full_score(
     # 3. 技术指标得分 + 趋势得分
     df = get_stock_daily(ts_code, days=120)
     
-    # 🔧 修复：检查 df 是否为 None 或空
     if df is None or df.empty:
         tech_score = 50
         tech_details = {}
@@ -2933,13 +2901,6 @@ def calculate_full_score(
         tech_score * user_weights.get("technical", 0.40) +
         trend_score * user_weights.get("trend", 0.20)
     )
-    # 🔧 添加调试输出
-    st.write(f"📊 总分计算详情:")
-    st.write(f"   sector_heat_score={sector_heat_score} × {user_weights.get('sector_heat', 0.25)} = {sector_heat_score * user_weights.get('sector_heat', 0.25)}")
-    st.write(f"   leader_score={leader_score} × {user_weights.get('leader', 0.15)} = {leader_score * user_weights.get('leader', 0.15)}")
-    st.write(f"   tech_score={tech_score} × {user_weights.get('technical', 0.40)} = {tech_score * user_weights.get('technical', 0.40)}")
-    st.write(f"   trend_score={trend_score} × {user_weights.get('trend', 0.20)} = {trend_score * user_weights.get('trend', 0.20)}")
-    st.write(f"   总分 = {total_score}")
     
     # 确定等级
     level = "D"
@@ -2972,9 +2933,6 @@ def get_stock_score(ts_code: str, stock_name: str = "", module_weights: Dict = N
     sector_name: 板块名称
     """
     import inspect
-    st.write(f"🚨 当前 get_stock_score 定义在文件第 {inspect.currentframe().f_lineno} 行")
-    st.write(f"🚨🚨🚨 get_stock_score 内部: sector_name={sector_name}")
-    st.write(f"📊 get_stock_score 接收: ts_code={ts_code}, sector_name={sector_name}, module_weights={module_weights}")
     # 如果没有传入模块权重，使用默认值（个股分析风格）
     if module_weights is None:
         module_weights = {
@@ -3918,7 +3876,6 @@ def get_index_technical_indicators(index_code: str = "000001.SH") -> Dict:
 
 def render_market_brief():
     """市场简报模块（增加上证指数技术指标 + 独立权重配置）"""
-    st.write("DEBUG: render_market_brief 函数开始执行")  # 临时调试
     st.markdown(f"### {t()['module1_title']}")
 
     # 右上角：权重配置 + 刷新按钮
@@ -4181,8 +4138,6 @@ def render_recommended_pool():
             with col1:
                 st.markdown(f"**{stock['stock_code']}**")
                 # 调试：打印 stock 字典的内容
-                st.write(f"🔍 调试: stock 字典 = {stock}")
-                st.write(f"🔍 调试: stock['stock_name'] = '{stock.get('stock_name')}'")
                 st.caption(stock['stock_name'])
             
             with col2:
@@ -5587,10 +5542,8 @@ def render_sidebar():
         col_status1, col_status2 = st.columns(2)
         with col_status1:
             if TUSHARE_AVAILABLE:
-                st.write("DEBUG: Tushare 可用")
                 st.markdown("✅ Tushare")
             else:
-                st.write("DEBUG: Tushare 不可用")
                 st.markdown("❌ Tushare")
         with col_status2:
             if GM_AVAILABLE:
