@@ -1504,6 +1504,11 @@ def get_recommended_pool(user_id: str, access_token: str = None) -> List[Dict]:
 
 def add_to_recommended_pool(user_id: str, stock_code: str, stock_name: str, 
                             source: str = "user", score: float = 0, access_token: str = None) -> tuple:
+
+
+    # 如果股票名称为空或等于股票代码，获取真实名称
+    if not stock_name or stock_name == stock_code:
+        stock_name = get_stock_name_from_tushare(stock_code)                                
     """添加股票到推荐池"""
     stocks = get_recommended_pool(user_id, access_token)
     if len(stocks) >= MAX_RECOMMENDED_STOCKS:
@@ -1646,6 +1651,10 @@ def add_to_live_pool(user_id: str, stock_code: str, stock_name: str,
         avg_cost: 平均成本价
     返回: (success, message)
     """
+    # 如果股票名称为空或等于股票代码，获取真实名称
+    if not stock_name or stock_name == stock_code:
+        stock_name = get_stock_name_from_tushare(stock_code)
+                         
     if not user_id or user_id == "admin":
         return False, "无效用户"
     
