@@ -6077,23 +6077,24 @@ def render_admin_panel():
     
     #-------
     with col4:
-    if st.button("🔥 同步系统热度", key="sync_system_hot", use_container_width=True):
-        with st.spinner("正在获取板块热度数据..."):
-            # 获取所有普通用户
-            users = get_all_users()
-            success_count = 0
-            for user in users:
-                uid = user.get('user_id')
-                if uid and uid != "admin":
-                    success, msg = merge_and_save_user_hot_sectors(uid)
-                    if success:
-                        success_count += 1
-            if success_count > 0:
-                st.success(f"✅ 已为 {success_count} 个用户同步系统热度")
-                st.balloons()
-                st.rerun()
-            else:
-                st.error("同步失败或无用户")
+        if st.button("🔥 同步系统热度", key="sync_system_hot", use_container_width=True):
+            with st.spinner("正在获取板块热度数据..."):
+                # 获取所有普通用户
+                users = get_all_users()
+                success_count = 0
+                for user in users:
+                    uid = user.get('user_id')
+                    if uid and uid != "admin":
+                        success, msg = merge_and_save_user_hot_sectors(uid)
+                        if success:
+                            success_count += 1
+                if success_count > 0:
+                    st.success(f"✅ 已为 {success_count} 个用户同步系统热度")
+                    st.balloons()
+                    st.rerun()
+                else:
+                    st.error("同步失败或无用户")
+    
     
     # 分隔线放在所有按钮之后，与 with col4 同一缩进级别
     st.markdown("---")
