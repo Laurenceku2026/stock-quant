@@ -6281,7 +6281,8 @@ def render_main_app():
     with st.container():
         render_market_brief()
         st.markdown("---")
-    
+
+    st.write("DEBUG: 板块管理按钮应该出现在这里")  # 临时调试
     # ==================== 板块管理按钮（新增） ====================
     with st.container():
         col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
@@ -6290,6 +6291,7 @@ def render_main_app():
                 st.session_state.show_sector_management = True
                 st.rerun()
         st.markdown("---")
+    st.write("DEBUG: 板块管理按钮之后")  # 临时调试
     
     # 模块2：推荐股票池
     with st.container():
