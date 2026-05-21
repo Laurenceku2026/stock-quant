@@ -4298,29 +4298,196 @@ def render_market_brief():
         st.caption(f"📝 {indicators['summary_text']}")
         st.markdown("---")
 
-        # 热点板块
-        try:
-            sector_df = get_cached_sector_performance()
-            if not sector_df.empty:
-                st.markdown("**🔥 今日热点板块**")
-                sector_sorted = sector_df.sort_values("涨跌幅", ascending=False)
-                st.dataframe(
-                    sector_sorted,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "板块": st.column_config.TextColumn("板块"),
-                        "涨跌幅": st.column_config.NumberColumn("涨跌幅", format="%.2f%%"),
-                        "领涨股": st.column_config.TextColumn("领涨股")
-                    }
-                )
-            else:
-                st.caption("暂无热点板块数据")
-        except Exception as err:
-            st.caption(f"获取板块数据失败: {str(err)}")
+    # ==================== 市场热度TOP10模块 ====================
+    with st.container():
+        st.markdown("#### 🔥 市场热度TOP10")
+        st.caption("基于昨日市场数据计算的板块热度排名（每日可手动刷新）")
+        
+        # 刷新按钮
+        col_refresh1, col_refresh2, col_refresh3 = st.columns([3, 1, 3])
+        with col_refresh2:
+            if st.button("🔄 刷新热度", key="refresh_main_hot", use_container_width=True):
+                with st.spinner("正在获取最新板块热度..."):
+                    # 调用 Tushare 更新数据
+                    new_hot_data = get_system_hot_sectors_from_tushare(limit=10)
+                    if new_hot_data:
+                        # 更新用户的 system 热点板块
+                        success, msg = merge_and_save_user_hot_sectors(
+                            st.session_state.user_id,
+                            st.session_state.get("access_token")
+                        )
+                        if success:
+                            st.success("热度数据已更新")
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                    else:
+                        st.error("获取热度数据失败")
+        
+        # 从数据库读取用户的市场热度TOP10
+        user_hot_sectors = get_user_hot_sectors_from_db(
+            st.session_state.user_id,
+            st.session_state.get("access_token")
+        )
+        
+        # 筛选出 system 来源的板块（市场热度TOP10）
+        system_hot_sectors = [s for s in user_hot_sectors if s.get('source') == 'system'] if user_hot_sectors else []
+        
+        if system_hot_sectors:
+            # 显示热度数据表格
+            hot_display = []
+            for idx, sector in enumerate(system_hot_sectors):
+                hot_display.append({
+                    "排名": idx + 1,
+                    "板块名称": sector.get('sector_name', ''),
+                    "热度分": f"{sector.get('hot_score', 50):.0f}分",
+                    "涨跌幅": "--",  # 涨跌幅需要从缓存获取，暂时显示 --
+                    "领涨股": "--"   # 领涨股需要从缓存获取，暂时显示 --
+                })
+            
+            st.dataframe(
+                pd.DataFrame(hot_display),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "排名": st.column_config.NumberColumn("排名", width="small"),
+                    "板块名称": st.column_config.TextColumn("板块名称"),
+                    "热度分": st.column_config.TextColumn("热度分"),
+                    "涨跌幅": st.column_config.TextColumn("涨跌幅"),
+                    "领涨股": st.column_config.TextColumn("领涨股")
+                }
+            )
+            st.caption("💡 热度分计算方式：涨10%得100分，跌10%得0分，中性50分")
+            st.caption("📌 点击刷新按钮可获取最新市场热度数据")
+        else:
+            st.info("暂无热度数据，请点击刷新按钮获取")
+        
+        st.markdown("---")
 
-        st.markdown("**🎯 龙头股关注**")
-        st.caption("• 光模块/CPO: 中际旭创、天孚通信、新易盛\n• 人工智能: 科大讯飞、海康威视\n• 半导体: 中芯国际、北方华创\n• 机器人: 汇川技术、埃斯顿")
+    # ==================== 动态龙头股关注模块 ====================
+    with st.container():
+        st.markdown("#### 🎯 龙头股关注")
+        st.caption("基于您的热点板块，实时计算的领涨龙头股")
+        
+        # 获取用户的"我的热点板块"（source='user'）
+        user_hot_sectors = get_user_hot_sectors_from_db(
+            st.session_state.user_id,
+            st.session_state.get("access_token")
+        )
+        
+        # 筛选出 user 来源的板块（我的热点板块）
+        user_sectors = [s for s in user_hot_sectors if s.get('source') == 'user'] if user_hot_sectors else []
+        
+        if not user_sectors:
+            # 如果没有热点板块，显示默认提示
+            st.info("暂无热点板块，请前往板块管理添加")
+        else:
+            # 获取每个板块的龙头股
+            leader_data = []
+            
+            for sector in user_sectors[:10]:  # 最多显示10个板块
+                sector_name = sector.get('sector_name')
+                if not sector_name:
+                    continue
+                
+                # 获取板块成分股
+                members = get_sector_members_from_cache(sector_name, limit=10)
+                if not members:
+                    members = get_sector_members_fallback(sector_name, limit=10)
+                
+                if members:
+                    # 计算每只股票的涨跌幅（简化版：用最近5日涨幅）
+                    stock_performance = []
+                    for member in members[:10]:
+                        ts_code = member.get('stock_code')
+                        stock_name = member.get('stock_name')
+                        if not ts_code:
+                            continue
+                        
+                        # 获取股票名称
+                        if not stock_name or stock_name == ts_code:
+                            stock_name = get_stock_name_from_tushare(ts_code)
+                        
+                        # 计算涨跌幅（最近5日）
+                        try:
+                            df = get_stock_daily(ts_code, days=5)
+                            if not df.empty and len(df) >= 2:
+                                pct_chg = (df['close'].iloc[-1] - df['close'].iloc[-2]) / df['close'].iloc[-2] * 100
+                                stock_performance.append({
+                                    "code": ts_code,
+                                    "name": stock_name,
+                                    "pct_chg": pct_chg
+                                })
+                            else:
+                                stock_performance.append({
+                                    "code": ts_code,
+                                    "name": stock_name,
+                                    "pct_chg": 0
+                                })
+                        except:
+                            stock_performance.append({
+                                "code": ts_code,
+                                "name": stock_name,
+                                "pct_chg": 0
+                            })
+                    
+                    # 按涨跌幅排序，取第一名作为龙头股
+                    if stock_performance:
+                        stock_performance.sort(key=lambda x: x.get('pct_chg', 0), reverse=True)
+                        leader = stock_performance[0]
+                        leader_name = leader.get('name', '')
+                        leader_pct = leader.get('pct_chg', 0)
+                        
+                        # 格式化涨跌幅显示
+                        if leader_pct > 0:
+                            pct_display = f"🟢 +{leader_pct:.2f}%"
+                        elif leader_pct < 0:
+                            pct_display = f"🔴 {leader_pct:.2f}%"
+                        else:
+                            pct_display = f"⚪ 0.00%"
+                        
+                        leader_data.append({
+                            "sector_name": sector_name,
+                            "leader_name": leader_name,
+                            "leader_pct": pct_display
+                        })
+                    else:
+                        leader_data.append({
+                            "sector_name": sector_name,
+                            "leader_name": "--",
+                            "leader_pct": "--"
+                        })
+                else:
+                    leader_data.append({
+                        "sector_name": sector_name,
+                        "leader_name": "--",
+                        "leader_pct": "--"
+                    })
+            
+            # 显示龙头股列表
+            if leader_data:
+                # 使用列布局显示，每行显示2-3个
+                cols_per_row = 2
+                for i in range(0, len(leader_data), cols_per_row):
+                    cols = st.columns(cols_per_row)
+                    for j, col in enumerate(cols):
+                        idx = i + j
+                        if idx < len(leader_data):
+                            item = leader_data[idx]
+                            with col:
+                                st.markdown(f"""
+                                <div style="border:1px solid #ddd; border-radius:10px; padding:10px; margin:5px;">
+                                    <strong>{item['sector_name']}</strong><br>
+                                    <span style="font-size:1.2rem;">{item['leader_name']}</span><br>
+                                    <span style="font-size:0.9rem;">{item['leader_pct']}</span>
+                                </div>
+                                """, unsafe_allow_html=True)
+                
+                st.caption("💡 龙头股按最近5日涨跌幅排序，取板块内涨幅最高的股票")
+            else:
+                st.caption("暂无龙头股数据")
+        
+        st.markdown("---")
 
 # ==================== 模块2：推荐股票池 ====================
 
@@ -5335,91 +5502,76 @@ def render_sector_management():
     st.markdown("### 📁 板块管理")
     st.caption("管理您的热点板块，用于推荐股票池评分")
     
-    # 获取当前用户的预设板块
-    preset_sectors = get_user_preset_sectors_from_db(
-        st.session_state.user_id, 
-        st.session_state.get("access_token")
-    )
-    
-    # 如果预设板块为空，初始化5个默认板块
-    if not preset_sectors:
-        default_sectors = ["光模块/CPO", "人工智能", "半导体", "算力", "机器人"]
-        for sector_name in default_sectors:
-            add_user_preset_sector(
-                st.session_state.user_id,
-                sector_name,
-                sector_name,
-                st.session_state.get("access_token")
-            )
-        preset_sectors = get_user_preset_sectors_from_db(
-            st.session_state.user_id, 
-            st.session_state.get("access_token")
-        )
-    
     # 创建2个Tab
     tab1, tab2 = st.tabs(["📊 市场热度TOP10", "⭐ 我的热点板块"])
     
     # ==================== Tab1: 市场热度TOP10 ====================
     with tab1:
         st.markdown("#### 🔥 市场热度TOP10")
-        st.caption("基于昨日市场数据计算的板块热度排名（每日更新）")
+        st.caption("基于昨日市场数据计算的板块热度排名（每日可手动刷新）")
         
         # 刷新按钮
-        col1, col2 = st.columns([3, 1])
+        col1, col2, col3 = st.columns([2, 1, 2])
         with col2:
-            if st.button("🔄 刷新热度", key="refresh_hot_sectors", use_container_width=True):
+            if st.button("🔄 刷新热度数据", key="refresh_tab1_hot", use_container_width=True):
                 with st.spinner("正在获取最新板块热度..."):
-                    new_hot_data = get_system_hot_sectors_from_tushare(limit=10)
-                    if new_hot_data:
-                        st.session_state.hot_data_cache = new_hot_data
-                        st.success(f"已获取 {len(new_hot_data)} 个热门板块")
+                    # 调用 Tushare 获取最新数据并更新数据库
+                    success, msg = merge_and_save_user_hot_sectors(
+                        st.session_state.user_id,
+                        st.session_state.get("access_token")
+                    )
+                    if success:
+                        st.success("热度数据已更新")
                         st.rerun()
                     else:
-                        st.error("获取热度数据失败")
+                        st.error(msg)
         
-        # 获取系统热度TOP10（优先使用缓存）
-        if "hot_data_cache" in st.session_state:
-            system_hot = st.session_state.hot_data_cache
-        else:
-            system_hot = get_system_hot_sectors_from_tushare(limit=10)
+        # 从数据库读取用户的市场热度TOP10（source='system'）
+        user_hot_sectors = get_user_hot_sectors_from_db(
+            st.session_state.user_id,
+            st.session_state.get("access_token")
+        )
         
-        if system_hot:
-            # 获取当前预设板块名称列表（用于判断是否已添加）
-            preset_names = [s.get('sector_name') for s in preset_sectors] if preset_sectors else []
-            
-            # 显示热度数据表格（每个板块带添加按钮）
-            for idx, sector in enumerate(system_hot):
+        # 筛选出 system 来源的板块
+        system_hot_sectors = [s for s in user_hot_sectors if s.get('source') == 'system'] if user_hot_sectors else []
+        
+        # 获取当前用户的预设板块名称列表（用于判断是否已添加）
+        preset_sectors = get_user_preset_sectors_from_db(
+            st.session_state.user_id,
+            st.session_state.get("access_token")
+        )
+        preset_names = [s.get('sector_name') for s in preset_sectors] if preset_sectors else []
+        
+        if system_hot_sectors:
+            # 显示热度数据，每个板块带添加按钮
+            for idx, sector in enumerate(system_hot_sectors):
                 with st.container(border=True):
                     col1, col2, col3, col4, col5 = st.columns([2, 1, 1, 1.5, 1])
                     
                     with col1:
-                        st.markdown(f"**{idx+1}. {sector.get('name', '')}**")
+                        st.markdown(f"**{idx+1}. {sector.get('sector_name', '')}**")
                     
                     with col2:
-                        pct = sector.get('pct_chg', 0)
-                        color = "🟢" if pct > 0 else "🔴" if pct < 0 else "⚪"
-                        st.markdown(f"{color} {pct:+.2f}%")
+                        hot_score = sector.get('hot_score', 50)
+                        st.markdown(f"热度: **{hot_score:.0f}**分")
                     
                     with col3:
-                        st.markdown(f"热度: **{sector.get('hot_score', 50):.0f}**分")
+                        # 涨跌幅暂时显示占位符
+                        st.markdown("涨跌: --")
                     
                     with col4:
-                        leading_name = sector.get('leading_name', '')
-                        if leading_name:
-                            st.caption(f"领涨: {leading_name}")
-                        else:
-                            st.caption("领涨: --")
+                        st.caption("领涨: --")
                     
                     with col5:
-                        sector_name = sector.get('name', '')
+                        sector_name = sector.get('sector_name', '')
                         if sector_name in preset_names:
                             st.success("✅ 已添加")
                         else:
-                            if st.button("➕ 添加", key=f"add_hot_{idx}_{sector_name}"):
+                            if st.button("➕ 添加", key=f"add_hot_tab1_{idx}_{sector_name}"):
                                 success, msg = add_user_preset_sector(
                                     st.session_state.user_id,
                                     sector_name,
-                                    sector.get('code', ''),
+                                    sector.get('sector_code', ''),
                                     st.session_state.get("access_token")
                                 )
                                 if success:
@@ -5429,6 +5581,7 @@ def render_sector_management():
                                     st.error(msg)
             
             st.caption("💡 热度分计算方式：涨10%得100分，跌10%得0分，中性50分")
+            st.caption("📌 点击刷新按钮可获取最新市场热度数据，点击添加可将板块加入「我的热点板块」")
         else:
             st.info("暂无热度数据，请点击刷新按钮获取")
     
@@ -5460,13 +5613,12 @@ def render_sector_management():
             st.success("已恢复默认热点板块")
             st.rerun()
         
-        # 获取热度分映射（从系统热度数据）
-        if "hot_data_cache" in st.session_state:
-            system_hot = st.session_state.hot_data_cache
-        else:
-            system_hot = get_system_hot_sectors_from_tushare(limit=10)
-        
-        hot_score_map = {s.get('name'): s.get('hot_score', 50) for s in system_hot} if system_hot else {}
+        # 获取热度分映射（从 system 热点数据中获取）
+        user_hot_sectors = get_user_hot_sectors_from_db(
+            st.session_state.user_id,
+            st.session_state.get("access_token")
+        )
+        system_hot_map = {s.get('sector_name'): s.get('hot_score', 50) for s in user_hot_sectors if s.get('source') == 'system'} if user_hot_sectors else {}
         
         # 添加板块区域（带搜索的下拉菜单）
         st.markdown("**➕ 添加板块**")
@@ -5488,11 +5640,11 @@ def render_sector_management():
                 selected_sector = st.selectbox(
                     "搜索并选择板块",
                     options=available_options,
-                    key="add_sector_select",
+                    key="add_sector_select_tab2",
                     help="输入关键词搜索板块"
                 )
             with col2:
-                if st.button("➕ 添加到列表", key="add_sector_btn", use_container_width=True):
+                if st.button("➕ 添加到列表", key="add_sector_btn_tab2", use_container_width=True):
                     if len(preset_sectors) >= 20:
                         st.warning("热点板块已达上限（20个）")
                     else:
@@ -5518,7 +5670,7 @@ def render_sector_management():
             sorted_sectors = []
             for sector in preset_sectors:
                 sector_name = sector.get('sector_name')
-                hot_score = hot_score_map.get(sector_name, 50)
+                hot_score = system_hot_map.get(sector_name, 50)
                 sorted_sectors.append({
                     "sector_name": sector_name,
                     "sector_code": sector.get('sector_code', ''),
@@ -5537,7 +5689,7 @@ def render_sector_management():
                 with col2:
                     st.caption(f"热度: {sector.get('hot_score', 50):.0f}分")
                 with col3:
-                    if st.button("🗑️ 删除", key=f"del_preset_{sector.get('sector_name')}_{idx}"):
+                    if st.button("🗑️ 删除", key=f"del_preset_tab2_{sector.get('sector_name')}_{idx}"):
                         success, msg = delete_user_preset_sector(
                             st.session_state.user_id,
                             sector.get('sector_name'),
