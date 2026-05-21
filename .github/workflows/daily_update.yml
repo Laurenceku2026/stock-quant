@@ -1,1 +1,32 @@
+name: Daily Update - Refresh Leader Stocks Cache
 
+on:
+  schedule:
+    # 每天凌晨 2:00（北京时间）运行
+    - cron: '0 18 * * *'  # UTC 时间 18:00 = 北京时间 次日 2:00
+  workflow_dispatch:      # 支持手动触发
+
+jobs:
+  update-cache:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      
+      - name: Install dependencies
+        run: |
+          pip install requests pandas numpy tushare
+      
+      - name: Run update script
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_STOCK_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_STOCK_SECRET_KEY }}
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+        run: |
+          python scripts/daily_update.py
