@@ -5509,7 +5509,7 @@ def render_admin_panel():
     
     # 数据管理（股票列表同步）
     st.markdown("### 📊 数据管理")
-    col1, col2 = st.columns(3)
+    col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("🔄 同步股票列表", key="sync_stocks", use_container_width=True):
             with st.spinner("正在同步股票列表（可能需要1分钟）..."):
