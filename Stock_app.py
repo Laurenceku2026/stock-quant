@@ -4994,6 +4994,36 @@ def render_market_brief():
             except Exception as e:
                 st.warning(f"获取实时数据失败: {e}")
             
+            # ========== 补充：为没有领涨股的板块从成分股计算 ==========
+            for sector_name in [s.get('sector_name') for s in preset_sectors]:
+                if sector_data_map.get(sector_name, {}).get('leading_name', '--') == '--':
+                    try:
+                        # 从 user_sector_stocks 获取成分股
+                        members = get_user_sector_stocks_from_db(
+                            st.session_state.user_id, 
+                            sector_name, 
+                            st.session_state.get("access_token")
+                        )
+                        if members:
+                            best_stock_name = None
+                            best_pct = -100
+                            for member in members[:10]:
+                                ts_code = member.get('stock_code')
+                                if ts_code:
+                                    df = get_stock_daily(ts_code, days=5)
+                                    if not df.empty and len(df) >= 2:
+                                        pct_chg = (df['close'].iloc[-1] - df['close'].iloc[-2]) / df['close'].iloc[-2] * 100
+                                        if pct_chg > best_pct:
+                                            best_pct = pct_chg
+                                            best_stock_name = member.get('stock_name', ts_code)
+                            if best_stock_name:
+                                sector_data_map[sector_name]["leading_name"] = best_stock_name
+                                # 如果没有涨跌幅数据，用成分股的最高涨跌幅作为板块涨跌幅
+                                if sector_data_map[sector_name]["pct_chg"] == 0:
+                                    sector_data_map[sector_name]["pct_chg"] = best_pct
+                    except Exception as e:
+                        print(f"计算板块 {sector_name} 领涨股失败: {e}")
+            
             # 添加板块区域（带搜索的下拉菜单）
             st.markdown("**➕ 添加板块**")
             
