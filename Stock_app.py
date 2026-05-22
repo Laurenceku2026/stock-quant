@@ -5569,16 +5569,18 @@ def render_live_signals():
             else:
                 # 刷新实操池价格
                 refresh_live_pool_prices(st.session_state.user_id, st.session_state.get("access_token"))
+                # 设置评分刷新标志，触发推荐池重新计算
+                st.session_state.refresh_recommended_scores = True
                 update_last_update_time("live_signals")
                 st.rerun()
     
     last_update = get_last_update_time("live_signals")
     st.caption(f"📅 最后更新: {last_update} | 💡 AI生成交易信号，掘金一键下单")
     
-    # 获取各模块权重（实操信号独立权重）
-    live_weights = get_module_weights("live_signals")
+    # 获取各模块权重（实操信号独立权重）- 不再需要实时评分，注释掉
+    # live_weights = get_module_weights("live_signals")
     
-    # ===== 实操池管理（新增） =====
+    # ===== 实操池管理 =====
     st.markdown("**📋 我的实操池**")
     
     # 添加股票到实操池
@@ -5690,25 +5692,24 @@ def render_live_signals():
     
     signals = []
     
-    # 从推荐池获取高分股票（使用实操信号模块的独立权重计算）
+    # 从推荐池获取高分股票（直接使用数据库中的评分）
     if recommended_stocks:
-        with st.spinner("正在计算信号..."):
-            for stock in recommended_stocks[:10]:  # 最多取10只
-                score_result = get_stock_score(stock['stock_code'], stock.get('stock_name', ''), live_weights)
-                score = score_result["total_score"]
-                
-                if score >= 70:
-                    signals.append({
-                        "stock_code": stock['stock_code'],
-                        "stock_name": stock.get('stock_name', ''),
-                        "score": score,
-                        "action": "买入",
-                        "suggested_position": "5-15%",
-                        "confidence": f"{score:.0f}%",
-                        "source": "推荐池"
-                    })
+        for stock in recommended_stocks[:10]:
+            # 直接使用数据库中存储的评分
+            score = stock.get('current_score', 50)
+            
+            if score >= 70:
+                signals.append({
+                    "stock_code": stock['stock_code'],
+                    "stock_name": stock.get('stock_name', ''),
+                    "score": score,
+                    "action": "买入",
+                    "suggested_position": "5-15%",
+                    "confidence": f"{score:.0f}%",
+                    "source": "推荐池"
+                })
     
-    # 从实操池获取信号
+    # 从实操池获取信号（直接使用数据库中的评分）
     for stock in live_stocks:
         current_price = stock.get("current_price", 0)
         avg_cost = stock.get("avg_cost", 0)
@@ -5728,16 +5729,16 @@ def render_live_signals():
             action = "持有"
             action_color = "⚪"
         
-        # 使用实操信号模块权重计算当前得分
-        score_result = get_stock_score(stock['stock_code'], stock.get('stock_name', ''), live_weights)
+        # 直接使用数据库中存储的评分，不实时计算
+        score = stock.get('current_score', 50)
         
         signals.append({
             "stock_code": stock['stock_code'],
             "stock_name": stock.get('stock_name', ''),
-            "score": score_result["total_score"],
+            "score": score,
             "action": action,
             "suggested_position": f"{stock.get('shares', 0)}股",
-            "confidence": f"{score_result['total_score']:.0f}%",
+            "confidence": f"{score:.0f}%",
             "source": "实操池",
             "action_color": action_color
         })
