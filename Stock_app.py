@@ -1652,39 +1652,50 @@ def fetch_sector_stocks_from_tushare(sector_name: str) -> List[Dict]:
     从 Tushare 获取板块成分股
     返回: [{"stock_code": "000001.SZ", "stock_name": "平安银行"}, ...]
     """
+    print(f"🔍 [TUSHARE_DEBUG] fetch_sector_stocks_from_tushare 被调用, sector_name={sector_name}")
+    
     if not TUSHARE_AVAILABLE:
-        print(f"Tushare 不可用，无法获取板块 {sector_name} 的成分股")
+        print(f"❌ [TUSHARE_DEBUG] Tushare 不可用")
         return []
     
     try:
         # 1. 获取概念板块列表，查找板块代码
+        print(f"📡 [TUSHARE_DEBUG] 正在获取概念板块列表...")
         concept_df = TUSHARE_PRO.concept()
+        
         if concept_df is None or concept_df.empty:
-            print("获取概念板块列表失败")
+            print(f"❌ [TUSHARE_DEBUG] 获取概念板块列表失败，返回空")
             return []
+        
+        print(f"✅ [TUSHARE_DEBUG] 获取到 {len(concept_df)} 个概念板块")
         
         # 查找板块id（支持精确匹配和模糊匹配）
         concept_row = concept_df[concept_df['name'] == sector_name]
         if concept_row.empty:
             # 尝试模糊匹配
+            print(f"⚠️ [TUSHARE_DEBUG] 精确匹配失败，尝试模糊匹配...")
             concept_row = concept_df[concept_df['name'].str.contains(sector_name, na=False)]
         
         if concept_row.empty:
-            print(f"未找到板块: {sector_name}")
+            print(f"❌ [TUSHARE_DEBUG] 未找到板块: {sector_name}")
             return []
         
         concept_id = concept_row.iloc[0]['code']
-        print(f"找到板块 {sector_name} 的代码: {concept_id}")
+        concept_name = concept_row.iloc[0]['name']
+        print(f"✅ [TUSHARE_DEBUG] 找到板块: {concept_name}, 代码: {concept_id}")
         
         # 2. 获取板块成分股
+        print(f"📡 [TUSHARE_DEBUG] 正在获取板块成分股, id={concept_id}...")
         df = TUSHARE_PRO.concept_detail(id=concept_id)
         
         if df is None or df.empty:
-            print(f"板块 {sector_name} 无成分股数据")
+            print(f"⚠️ [TUSHARE_DEBUG] 板块 {sector_name} 无成分股数据")
             return []
         
+        print(f"✅ [TUSHARE_DEBUG] 获取到 {len(df)} 只成分股")
+        
         result = []
-        for _, row in df.iterrows():
+        for idx, row in df.iterrows():
             ts_code = row.get('ts_code', '')
             name = row.get('name', '')
             if ts_code:
@@ -1695,12 +1706,15 @@ def fetch_sector_stocks_from_tushare(sector_name: str) -> List[Dict]:
                     "stock_code": ts_code,
                     "stock_name": name
                 })
+                print(f"   [TUSHARE_DEBUG] 成分股 {idx+1}: {ts_code} - {name}")
         
-        print(f"✅ 获取板块 {sector_name} 成分股成功，共 {len(result)} 只股票")
+        print(f"✅ [TUSHARE_DEBUG] 成功获取板块 {sector_name} 成分股，共 {len(result)} 只")
         return result
         
     except Exception as e:
-        print(f"获取板块成分股失败 {sector_name}: {e}")
+        print(f"❌ [TUSHARE_DEBUG] 获取板块成分股失败 {sector_name}: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 
