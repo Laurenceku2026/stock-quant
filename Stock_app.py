@@ -1206,7 +1206,7 @@ def get_previous_trade_date(date_str: str) -> str:
     
     return prev_dt.strftime("%Y%m%d")
 
-
+#-----
 def get_user_preset_sectors_from_db(user_id: str, access_token: str = None) -> List[Dict]:
     """
     从数据库获取用户预设的板块（最多10个）
@@ -1219,7 +1219,12 @@ def get_user_preset_sectors_from_db(user_id: str, access_token: str = None) -> L
         return []
     
     try:
-        headers = get_supabase_headers(access_token=access_token) if access_token else get_supabase_headers(use_secret=True)
+        # 直接使用 SUPABASE_SECRET_KEY 构建 headers，不依赖 get_supabase_headers
+        headers = {
+            "apikey": SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
+            "Content-Type": "application/json"
+        }
         url = f"{SUPABASE_URL}/rest/v1/user_preset_sectors?user_id=eq.{user_id}&order=added_at.asc&limit=10"
         response = requests.get(url, headers=headers)
         
@@ -1441,7 +1446,7 @@ def merge_and_save_user_hot_sectors(user_id: str, access_token: str = None) -> T
         print(f"合并热点板块失败: {e}")
         return False, f"合并失败: {str(e)}"
 
-
+#----
 def get_user_hot_sectors_from_db(user_id: str, access_token: str = None) -> List[Dict]:
     """
     获取用户合并后的热点板块（用于推荐股票池评分）
@@ -1451,7 +1456,11 @@ def get_user_hot_sectors_from_db(user_id: str, access_token: str = None) -> List
         return []
     
     try:
-        headers = get_supabase_headers(access_token=access_token) if access_token else get_supabase_headers(use_secret=True)
+        headers = {
+            "apikey": SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
+            "Content-Type": "application/json"
+        }
         url = f"{SUPABASE_URL}/rest/v1/user_hot_sectors?user_id=eq.{user_id}&order=rank_order.asc"
         response = requests.get(url, headers=headers)
         
@@ -1759,7 +1768,7 @@ def save_sector_stocks_to_db(user_id: str, sector_name: str, stocks: List[Dict],
         print(f"保存成分股失败: {e}")
         return False
 
-
+#---
 def get_user_sector_stocks_from_db(user_id: str, sector_name: str, access_token: str = None) -> List[Dict]:
     """
     从数据库读取用户指定板块的成分股
@@ -1769,8 +1778,14 @@ def get_user_sector_stocks_from_db(user_id: str, sector_name: str, access_token:
         return []
     
     try:
-        headers = get_supabase_headers(access_token=access_token) if access_token else get_supabase_headers(use_secret=True)
-        url = f"{SUPABASE_URL}/rest/v1/user_sector_stocks?user_id=eq.{user_id}&sector_name=eq.{sector_name}&order=rank.asc"
+        headers = {
+            "apikey": SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
+            "Content-Type": "application/json"
+        }
+        import urllib.parse
+        encoded_name = urllib.parse.quote(sector_name)
+        url = f"{SUPABASE_URL}/rest/v1/user_sector_stocks?user_id=eq.{user_id}&sector_name=eq.{encoded_name}&order=rank.asc"
         response = requests.get(url, headers=headers)
         
         if response.status_code == 200:
