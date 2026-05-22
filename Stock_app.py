@@ -1466,26 +1466,23 @@ def get_user_hot_sectors_from_db(user_id: str, access_token: str = None) -> List
 def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple[bool, str]:
     """
     计算用户所有热点板块的龙头股，并保存到缓存表
-    从 user_sector_stocks 表读取成分股（该表在添加板块时已填充）
+    实时从 Tushare 获取每个板块的成分股
     """
-    print(f"🔍 DEBUG: save_leader_stocks_to_cache 被调用, user_id={user_id}")
+    print(f"🔍 save_leader_stocks_to_cache 被调用, user_id={user_id}")
     
     if not user_id or user_id == "admin":
-        print(f"❌ 无效用户: {user_id}")
         return False, "无效用户"
     
-    # 获取用户的"我的热点板块"
+    # 获取用户的「我的热点板块」
     preset_sectors = get_user_preset_sectors_from_db(user_id, access_token)
-    print(f"📊 获取到预设板块: {len(preset_sectors)} 个")
     
     if not preset_sectors:
-        print(f"⚠️ 没有预设板块")
         return False, "没有热点板块"
     
     headers = get_supabase_headers(use_secret=True)
     cache_url = f"{SUPABASE_URL}/rest/v1/user_leader_stocks_cache"
     
-    # 先删除该用户的旧缓存数据
+    # 先删除旧缓存
     requests.delete(cache_url, headers=headers, params=f"user_id=eq.{user_id}")
     
     leader_count = 0
@@ -1495,24 +1492,37 @@ def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple
         if not sector_name:
             continue
         
-        # 🔧 关键修改：从 user_sector_stocks 表读取该板块的成分股
-        members = get_user_sector_stocks_from_db(user_id, sector_name, access_token)
+        print(f"🔄 正在处理板块: {sector_name}")
         
-        if not members:
-            print(f"⚠️ 板块 {sector_name} 无成分股数据")
+        # 🔧 关键：实时从 Tushare 获取该板块的成分股
+        stocks = fetch_sector_stocks_from_tushare(sector_name)
+        
+        if not stocks:
+            # 降级：从 HOT_SECTORS 获取
+            if sector_name in HOT_SECTORS:
+                sector_info = HOT_SECTORS[sector_name]
+                stocks = []
+                for i, code in enumerate(sector_info.get("stocks", [])):
+                    name = sector_info.get("names", [])[i] if i < len(sector_info.get("names", [])) else code
+                    stocks.append({
+                        "stock_code": code,
+                        "stock_name": name
+                    })
+                print(f"📋 使用预置数据: {len(stocks)} 只成分股")
+        
+        if not stocks:
+            print(f"⚠️ 无法获取板块 {sector_name} 的成分股")
             continue
         
-        print(f"📋 板块 {sector_name} 有 {len(members)} 只成分股")
-        
-        # 计算每只股票的涨跌幅（最近5日）
+        # 计算每只股票的涨跌幅
         stock_performance = []
-        for member in members[:10]:
-            ts_code = member.get('stock_code')
-            stock_name = member.get('stock_name')
+        for stock in stocks[:10]:
+            ts_code = stock.get('stock_code')
+            stock_name = stock.get('stock_name')
             if not ts_code:
                 continue
             
-            # 获取股票名称（如果为空）
+            # 获取股票名称
             if not stock_name or stock_name == ts_code:
                 stock_name = get_stock_name_from_tushare(ts_code)
             
@@ -1532,20 +1542,18 @@ def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple
                         "name": stock_name,
                         "pct_chg": 0
                     })
-            except Exception as e:
-                print(f"计算涨跌幅失败 {ts_code}: {e}")
+            except:
                 stock_performance.append({
                     "code": ts_code,
                     "name": stock_name,
                     "pct_chg": 0
                 })
         
-        # 按涨跌幅排序，取第一名作为龙头股
+        # 取涨幅最高的作为龙头股
         if stock_performance:
             stock_performance.sort(key=lambda x: x.get('pct_chg', 0), reverse=True)
             leader = stock_performance[0]
             
-            # 保存到缓存表
             data = {
                 "user_id": user_id,
                 "sector_name": sector_name,
@@ -1557,11 +1565,8 @@ def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple
             response = requests.post(cache_url, headers=headers, json=data)
             if response.status_code in [200, 201]:
                 leader_count += 1
-                print(f"✅ 板块 {sector_name} 龙头股: {leader.get('name')} ({leader.get('pct_chg', 0):.2f}%)")
-            else:
-                print(f"❌ 保存失败: {response.text}")
+                print(f"✅ {sector_name} 龙头: {leader.get('name')} ({leader.get('pct_chg', 0):.2f}%)")
     
-    print(f"✅ 用户 {user_id} 龙头股缓存已更新，共 {leader_count} 个板块")
     return True, f"龙头股已更新，共 {leader_count} 个板块"
 
 
