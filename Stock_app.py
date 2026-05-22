@@ -1466,7 +1466,9 @@ def get_user_hot_sectors_from_db(user_id: str, access_token: str = None) -> List
 def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple[bool, str]:
     """
     计算用户所有热点板块的龙头股，并保存到缓存表
-    直接使用 HOT_SECTORS 中的成分股（与推荐股票池保持一致）
+    优先从 user_sector_stocks 表读取成分股（用户添加板块时保存）
+    如果没有，尝试从 Tushare 实时获取
+    最后降级到 HOT_SECTORS 预置数据
     """
     print(f"🔍 save_leader_stocks_to_cache 被调用, user_id={user_id}")
     
@@ -1477,6 +1479,7 @@ def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple
     preset_sectors = get_user_preset_sectors_from_db(user_id, access_token)
     
     if not preset_sectors:
+        print(f"⚠️ 没有预设板块")
         return False, "没有热点板块"
     
     headers = get_supabase_headers(use_secret=True)
@@ -1494,37 +1497,50 @@ def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple
         
         print(f"🔄 处理板块: {sector_name}")
         
-        # 🔧 关键修改：直接从 HOT_SECTORS 获取成分股（与推荐股票池一致）
-        if sector_name not in HOT_SECTORS:
-            print(f"⚠️ 板块 {sector_name} 不在 HOT_SECTORS 中，跳过")
+        # ========== 1. 优先从 user_sector_stocks 表读取成分股 ==========
+        members = get_user_sector_stocks_from_db(user_id, sector_name, access_token)
+        
+        # ========== 2. 如果没有，尝试从 Tushare 实时获取 ==========
+        if not members:
+            print(f"📡 从 Tushare 获取板块 {sector_name} 成分股...")
+            stocks = fetch_sector_stocks_from_tushare(sector_name)
+            if stocks:
+                # 保存到数据库，下次直接使用
+                save_sector_stocks_to_db(user_id, sector_name, stocks, access_token)
+                members = stocks
+                print(f"✅ 从 Tushare 获取到 {len(members)} 只成分股")
+        
+        # ========== 3. 如果还没有，从 HOT_SECTORS 获取（降级） ==========
+        if not members and sector_name in HOT_SECTORS:
+            sector_info = HOT_SECTORS[sector_name]
+            stocks = sector_info.get("stocks", [])
+            names = sector_info.get("names", [])
+            members = []
+            for i, code in enumerate(stocks):
+                name = names[i] if i < len(names) else code
+                members.append({
+                    "stock_code": code,
+                    "stock_name": name
+                })
+            print(f"📋 使用 HOT_SECTORS 预置数据: {len(members)} 只成分股")
+        
+        if not members:
+            print(f"⚠️ 无法获取板块 {sector_name} 的成分股，跳过")
             continue
-        
-        sector_info = HOT_SECTORS[sector_name]
-        stocks = sector_info.get("stocks", [])
-        names = sector_info.get("names", [])
-        
-        if not stocks:
-            print(f"⚠️ 板块 {sector_name} 无成分股数据")
-            continue
-        
-        # 构建成分股列表
-        members = []
-        for i, code in enumerate(stocks):
-            name = names[i] if i < len(names) else code
-            members.append({
-                "stock_code": code,
-                "stock_name": name
-            })
         
         print(f"📋 板块 {sector_name} 有 {len(members)} 只成分股")
         
-        # 计算每只股票的涨跌幅
+        # ========== 计算每只股票的涨跌幅 ==========
         stock_performance = []
         for member in members[:10]:
             ts_code = member.get('stock_code')
             stock_name = member.get('stock_name')
             if not ts_code:
                 continue
+            
+            # 获取股票名称（如果为空）
+            if not stock_name or stock_name == ts_code:
+                stock_name = get_stock_name_from_tushare(ts_code)
             
             # 计算涨跌幅（最近5日）
             try:
@@ -1550,7 +1566,7 @@ def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple
                     "pct_chg": 0
                 })
         
-        # 取涨幅最高的作为龙头股
+        # ========== 取涨幅最高的作为龙头股 ==========
         if stock_performance:
             stock_performance.sort(key=lambda x: x.get('pct_chg', 0), reverse=True)
             leader = stock_performance[0]
