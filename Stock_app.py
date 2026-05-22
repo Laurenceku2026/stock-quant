@@ -168,6 +168,7 @@ _required_state = {
     "sector_cache_loaded": False,
     "edit_live_stock": None,
     "show_add_stocks_to_sector": False,
+    "refresh_recommended_scores": False,
     "new_sector_name": "",
     "access_token": None,
     "refresh_token": None,
@@ -4805,6 +4806,10 @@ def render_recommended_pool():
             st.warning("免费次数已用完，请升级到专业版")
             return
         with st.spinner("正在刷新推荐池..."):
+            # 设置刷新标志
+            st.session_state.refresh_recommended_scores = True
+            top10 = auto_recommend_top10(st.session_state.user_id, st.session_state.get("access_token"))
+            # ... 其余代码
             stocks = get_recommended_pool(st.session_state.user_id, st.session_state.get("access_token"))
             ai_stocks = [s for s in stocks if s.get("source") == "ai"]
             
@@ -4846,10 +4851,49 @@ def render_recommended_pool():
     # 获取推荐股票池模块的独立权重
     module_weights = get_module_weights("recommended")
     
-    with st.spinner("正在计算股票评分..."):
-        stock_list = [{"code": s["stock_code"], "name": s.get("stock_name", "")} for s in stocks]
-        # 🔧 修复：显式使用参数名
-        scored_stocks = score_batch_stocks(stock_list, module_weights=module_weights)
+    # 检查是否需要重新计算评分（用户点击刷新时设置）
+    if st.session_state.get("refresh_recommended_scores", False):
+        with st.spinner("正在重新计算股票评分..."):
+            stock_list = [{"code": s["stock_code"], "name": s.get("stock_name", "")} for s in stocks]
+            scored_stocks = score_batch_stocks(stock_list, module_weights=module_weights)
+            # 更新数据库中的评分
+            for idx, stock in enumerate(scored_stocks):
+                supabase_request(
+                    "PATCH",
+                    "recommended_pool",
+                    data={"current_score": stock["total_score"]},
+                    params=f"user_id=eq.{st.session_state.user_id}&stock_code=eq.{stock['stock_code']}",
+                    access_token=st.session_state.get("access_token")
+                )
+            st.session_state.refresh_recommended_scores = False
+            st.rerun()
+    else:
+        # 直接使用数据库中的评分，不重新计算
+        scored_stocks = []
+        for s in stocks:
+            score = s.get("current_score", 50)
+            # 根据分数确定等级
+            level = "D"
+            action = "观望"
+            position = "0%"
+            for lvl, config in SIGNAL_LEVELS.items():
+                if score >= config["min_score"]:
+                    level = lvl
+                    action = config["action"]
+                    position = config["position"]
+                    break
+            
+            scored_stocks.append({
+                "stock_code": s["stock_code"],
+                "stock_name": s.get("stock_name", ""),
+                "total_score": score,
+                "level": level,
+                "action": action,
+                "position": position,
+                "reasons": generate_score_reasons(score)
+            })
+        # 按分数排序
+        scored_stocks.sort(key=lambda x: x["total_score"], reverse=True)
     
     for idx, stock in enumerate(scored_stocks):
         with st.container(border=True):
