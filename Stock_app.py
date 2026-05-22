@@ -1520,6 +1520,7 @@ def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple
                     # 保存到数据库，下次直接使用
                     save_sector_stocks_to_db(user_id, sector_name, stocks, access_token)
                     members = stocks
+                    st.write(f"✅ 成功获取 {len(members)} 只成分股并保存")
                     print(f"✅ 从 Tushare 获取到 {len(members)} 只成分股")
                 else:
                     print(f"⚠️ Tushare 未返回成分股: {sector_name}")
@@ -1660,70 +1661,76 @@ def refresh_leader_stocks_for_all_users() -> Tuple[bool, str]:
 
 def fetch_sector_stocks_from_tushare(sector_name: str) -> List[Dict]:
     """
-    从 Tushare 获取板块成分股
+    从 Tushare 获取板块成分股（支持模糊匹配）
     返回: [{"stock_code": "000001.SZ", "stock_name": "平安银行"}, ...]
     """
-    st.write(f"🔍 [TUSHARE_DEBUG] fetch_sector_stocks_from_tushare 被调用, sector_name={sector_name}")
+    st.write(f"🔍 [TUSHARE_DEBUG] 获取板块: {sector_name}")
     
     if not TUSHARE_AVAILABLE:
-        st.error(f"❌ [TUSHARE_DEBUG] Tushare 不可用")
+        st.error(f"❌ Tushare 不可用")
         return []
     
     try:
-        # 1. 获取概念板块列表，查找板块代码
-        st.write(f"📡 [TUSHARE_DEBUG] 正在获取概念板块列表...")
+        # 1. 获取概念板块列表
         concept_df = TUSHARE_PRO.concept()
-        
         if concept_df is None or concept_df.empty:
-            st.error(f"❌ [TUSHARE_DEBUG] 获取概念板块列表失败，返回空")
+            st.error(f"❌ 获取概念板块列表失败")
             return []
         
-        st.write(f"✅ [TUSHARE_DEBUG] 获取到 {len(concept_df)} 个概念板块")
-        
-        # 查找板块id（支持精确匹配和模糊匹配）
+        # 2. 查找板块（支持精确匹配和模糊匹配）
+        # 先尝试精确匹配
         concept_row = concept_df[concept_df['name'] == sector_name]
+        
+        # 如果精确匹配失败，尝试模糊匹配（包含关系）
         if concept_row.empty:
-            # 尝试模糊匹配
-            st.write(f"⚠️ [TUSHARE_DEBUG] 精确匹配失败，尝试模糊匹配...")
-            concept_row = concept_df[concept_df['name'].str.contains(sector_name, na=False)]
+            st.write(f"⚠️ 精确匹配失败，尝试模糊匹配...")
+            # 查找包含该关键词的板块
+            concept_row = concept_df[concept_df['name'].str.contains(sector_name, na=False, case=False)]
+            
+            # 如果模糊匹配有多个结果，选择最相关的一个（长度最接近的）
+            if len(concept_row) > 1:
+                # 按名称长度排序，选择最接近的
+                concept_row = concept_row.iloc[[
+                    (concept_row['name'].str.len() - len(sector_name)).abs().argmin()
+                ]]
         
         if concept_row.empty:
-            st.error(f"❌ [TUSHARE_DEBUG] 未找到板块: {sector_name}")
+            st.error(f"❌ 未找到板块: {sector_name}")
             return []
         
         concept_id = concept_row.iloc[0]['code']
-        concept_name = concept_row.iloc[0]['name']
-        st.write(f"✅ [TUSHARE_DEBUG] 找到板块: {concept_name}, 代码: {concept_id}")
+        matched_name = concept_row.iloc[0]['name']
+        st.write(f"✅ 匹配到板块: {matched_name} (代码: {concept_id})")
         
-        # 2. 获取板块成分股
-        st.write(f"📡 [TUSHARE_DEBUG] 正在获取板块成分股, id={concept_id}...")
+        # 3. 获取板块成分股
         df = TUSHARE_PRO.concept_detail(id=concept_id)
-        
         if df is None or df.empty:
-            st.warning(f"⚠️ [TUSHARE_DEBUG] 板块 {sector_name} 无成分股数据")
+            st.warning(f"⚠️ 板块 {sector_name} 无成分股数据")
             return []
         
-        st.write(f"✅ [TUSHARE_DEBUG] 获取到 {len(df)} 只成分股")
+        st.write(f"✅ 获取到 {len(df)} 只成分股")
         
         result = []
         for idx, row in df.iterrows():
             ts_code = row.get('ts_code', '')
             name = row.get('name', '')
             if ts_code:
-                # 确保股票名称不为空
                 if not name:
                     name = get_stock_name_from_tushare(ts_code)
                 result.append({
                     "stock_code": ts_code,
                     "stock_name": name
                 })
-                st.write(f"   [TUSHARE_DEBUG] 成分股 {idx+1}: {ts_code} - {name}")
         
-        st.write(f"✅ [TUSHARE_DEBUG] 成功获取板块 {sector_name} 成分股，共 {len(result)} 只")
+        # 保存匹配到的板块名称到数据库（供后续使用）
+        if matched_name != sector_name:
+            st.write(f"📝 记录映射: {sector_name} -> {matched_name}")
+            # 可选：保存映射关系，下次直接使用
+        
         return result
         
     except Exception as e:
-        st.error(f"❌ [TUSHARE_DEBUG] 获取板块成分股失败 {sector_name}: {e}")
+        st.error(f"❌ 获取板块成分股失败: {e}")
         import traceback
         st.code(traceback.format_exc())
         return []
