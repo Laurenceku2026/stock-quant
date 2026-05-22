@@ -1236,10 +1236,11 @@ def get_user_preset_sectors_from_db(user_id: str, access_token: str = None) -> L
         print(f"❌ 获取用户预设板块失败: {e}")
         return []
 
-
+#-----
 def add_user_preset_sector(user_id: str, sector_name: str, sector_code: str = "", access_token: str = None) -> Tuple[bool, str]:
     """
     添加用户预设板块
+    添加时自动从 Tushare 获取板块成分股并保存
     """
     if not user_id or user_id == "admin":
         return False, "无效用户"
@@ -1255,6 +1256,7 @@ def add_user_preset_sector(user_id: str, sector_name: str, sector_code: str = ""
             return False, f"板块 {sector_name} 已在预设列表中"
     
     try:
+        # 1. 先保存板块到预设表
         headers = get_supabase_headers(use_secret=True)
         data = {
             "user_id": user_id,
@@ -1265,30 +1267,77 @@ def add_user_preset_sector(user_id: str, sector_name: str, sector_code: str = ""
         url = f"{SUPABASE_URL}/rest/v1/user_preset_sectors"
         response = requests.post(url, headers=headers, json=data)
         
-        if response.status_code in [200, 201]:
-            # 添加成功后，重新合并热点板块
-            merge_and_save_user_hot_sectors(user_id, access_token)
-            return True, f"成功添加预设板块 {sector_name}"
-        return False, f"添加失败: {response.text}"
+        if response.status_code not in [200, 201]:
+            return False, f"添加预设板块失败: {response.text}"
+        
+        # 2. 自动获取板块成分股
+        print(f"🔄 正在获取板块 {sector_name} 的成分股...")
+        stocks = fetch_sector_stocks_from_tushare(sector_name)
+        
+        if stocks:
+            # 保存成分股到数据库
+            save_sector_stocks_to_db(user_id, sector_name, stocks, access_token)
+            print(f"✅ 已获取并保存板块 {sector_name} 的 {len(stocks)} 只成分股")
+        else:
+            # 如果没有获取到成分股，尝试从 HOT_SECTORS 获取
+            if sector_name in HOT_SECTORS:
+                sector_info = HOT_SECTORS[sector_name]
+                fallback_stocks = []
+                for i, code in enumerate(sector_info.get("stocks", [])):
+                    name = sector_info.get("names", [])[i] if i < len(sector_info.get("names", [])) else code
+                    fallback_stocks.append({
+                        "stock_code": code,
+                        "stock_name": name
+                    })
+                if fallback_stocks:
+                    save_sector_stocks_to_db(user_id, sector_name, fallback_stocks, access_token)
+                    print(f"⚠️ 使用预置数据保存板块 {sector_name} 的 {len(fallback_stocks)} 只成分股")
+                else:
+                    print(f"⚠️ 无法获取板块 {sector_name} 的成分股，龙头股将无法计算")
+            else:
+                print(f"⚠️ 无法获取板块 {sector_name} 的成分股，龙头股将无法计算")
+        
+        # 3. 添加成功后，重新合并热点板块
+        merge_and_save_user_hot_sectors(user_id, access_token)
+        
+        return True, f"成功添加预设板块 {sector_name}"
+        
     except Exception as e:
+        print(f"添加预设板块失败: {e}")
         return False, f"添加失败: {str(e)}"
 
 
 def delete_user_preset_sector(user_id: str, sector_name: str, access_token: str = None) -> Tuple[bool, str]:
     """
     删除用户预设板块
+    同时删除该板块对应的成分股数据
     """
     try:
         headers = get_supabase_headers(use_secret=True)
+        
+        # 1. 删除预设板块记录
         url = f"{SUPABASE_URL}/rest/v1/user_preset_sectors?user_id=eq.{user_id}&sector_name=eq.{sector_name}"
         response = requests.delete(url, headers=headers)
         
-        if response.status_code in [200, 204]:
-            # 删除成功后，重新合并热点板块
-            merge_and_save_user_hot_sectors(user_id, access_token)
-            return True, f"已删除预设板块 {sector_name}"
-        return False, f"删除失败: {response.text}"
+        if response.status_code not in [200, 204]:
+            return False, f"删除预设板块失败: {response.text}"
+        
+        # 2. 删除该板块的成分股数据
+        stocks_url = f"{SUPABASE_URL}/rest/v1/user_sector_stocks?user_id=eq.{user_id}&sector_name=eq.{sector_name}"
+        requests.delete(stocks_url, headers=headers)
+        
+        # 3. 删除该板块的龙头股缓存
+        cache_url = f"{SUPABASE_URL}/rest/v1/user_leader_stocks_cache?user_id=eq.{user_id}&sector_name=eq.{sector_name}"
+        requests.delete(cache_url, headers=headers)
+        
+        # 4. 重新合并热点板块（更新 user_hot_sectors 表）
+        merge_and_save_user_hot_sectors(user_id, access_token)
+        
+        print(f"✅ 已删除板块 {sector_name} 及其成分股、龙头股缓存")
+        return True, f"已删除预设板块 {sector_name}"
+        
     except Exception as e:
+        print(f"删除预设板块失败: {e}")
         return False, f"删除失败: {str(e)}"
 
 
@@ -1417,98 +1466,103 @@ def get_user_hot_sectors_from_db(user_id: str, access_token: str = None) -> List
 def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple[bool, str]:
     """
     计算用户所有热点板块的龙头股，并保存到缓存表
-    返回: (success, message)
+    从 user_sector_stocks 表读取成分股（该表在添加板块时已填充）
     """
     print(f"🔍 DEBUG: save_leader_stocks_to_cache 被调用, user_id={user_id}")
+    
     if not user_id or user_id == "admin":
+        print(f"❌ 无效用户: {user_id}")
         return False, "无效用户"
     
-    try:
-        # 获取用户的"我的热点板块"
-        preset_sectors = get_user_preset_sectors_from_db(user_id, access_token)
-        print(f"📊 获取到预设板块: {len(preset_sectors)} 个")
-        if not preset_sectors:
-            print(f"⚠️ 没有预设板块")
-            return False, "没有热点板块"
+    # 获取用户的"我的热点板块"
+    preset_sectors = get_user_preset_sectors_from_db(user_id, access_token)
+    print(f"📊 获取到预设板块: {len(preset_sectors)} 个")
+    
+    if not preset_sectors:
+        print(f"⚠️ 没有预设板块")
+        return False, "没有热点板块"
+    
+    headers = get_supabase_headers(use_secret=True)
+    cache_url = f"{SUPABASE_URL}/rest/v1/user_leader_stocks_cache"
+    
+    # 先删除该用户的旧缓存数据
+    requests.delete(cache_url, headers=headers, params=f"user_id=eq.{user_id}")
+    
+    leader_count = 0
+    
+    for sector in preset_sectors[:10]:
+        sector_name = sector.get('sector_name')
+        if not sector_name:
+            continue
         
-        headers = get_supabase_headers(use_secret=True)
-        url = f"{SUPABASE_URL}/rest/v1/user_leader_stocks_cache"
+        # 🔧 关键修改：从 user_sector_stocks 表读取该板块的成分股
+        members = get_user_sector_stocks_from_db(user_id, sector_name, access_token)
         
-        # 先删除该用户的旧缓存数据
-        requests.delete(url, headers=headers, params=f"user_id=eq.{user_id}")
+        if not members:
+            print(f"⚠️ 板块 {sector_name} 无成分股数据")
+            continue
         
-        leader_count = 0
+        print(f"📋 板块 {sector_name} 有 {len(members)} 只成分股")
         
-        for sector in preset_sectors[:10]:  # 最多10个板块
-            sector_name = sector.get('sector_name')
-            if not sector_name:
+        # 计算每只股票的涨跌幅（最近5日）
+        stock_performance = []
+        for member in members[:10]:
+            ts_code = member.get('stock_code')
+            stock_name = member.get('stock_name')
+            if not ts_code:
                 continue
             
-            # 获取板块成分股
-            members = get_sector_members_from_cache(sector_name, limit=10)
-            if not members:
-                members = get_sector_members_fallback(sector_name, limit=10)
+            # 获取股票名称（如果为空）
+            if not stock_name or stock_name == ts_code:
+                stock_name = get_stock_name_from_tushare(ts_code)
             
-            if members:
-                # 计算每只股票的涨跌幅（最近5日）
-                stock_performance = []
-                for member in members[:10]:
-                    ts_code = member.get('stock_code')
-                    stock_name = member.get('stock_name')
-                    if not ts_code:
-                        continue
-                    
-                    # 获取股票名称
-                    if not stock_name or stock_name == ts_code:
-                        stock_name = get_stock_name_from_tushare(ts_code)
-                    
-                    # 计算涨跌幅（最近5日）
-                    try:
-                        df = get_stock_daily(ts_code, days=5)
-                        if not df.empty and len(df) >= 2:
-                            pct_chg = (df['close'].iloc[-1] - df['close'].iloc[-2]) / df['close'].iloc[-2] * 100
-                            stock_performance.append({
-                                "code": ts_code,
-                                "name": stock_name,
-                                "pct_chg": pct_chg
-                            })
-                        else:
-                            stock_performance.append({
-                                "code": ts_code,
-                                "name": stock_name,
-                                "pct_chg": 0
-                            })
-                    except:
-                        stock_performance.append({
-                            "code": ts_code,
-                            "name": stock_name,
-                            "pct_chg": 0
-                        })
-                
-                # 按涨跌幅排序，取第一名作为龙头股
-                if stock_performance:
-                    stock_performance.sort(key=lambda x: x.get('pct_chg', 0), reverse=True)
-                    leader = stock_performance[0]
-                    
-                    # 保存到缓存表
-                    data = {
-                        "user_id": user_id,
-                        "sector_name": sector_name,
-                        "leader_code": leader.get('code', ''),
-                        "leader_name": leader.get('name', ''),
-                        "leader_pct": round(leader.get('pct_chg', 0), 2),
-                        "calculated_at": datetime.now().isoformat()
-                    }
-                    response = requests.post(url, headers=headers, json=data)
-                    if response.status_code in [200, 201]:
-                        leader_count += 1
+            # 计算涨跌幅（最近5日）
+            try:
+                df = get_stock_daily(ts_code, days=5)
+                if not df.empty and len(df) >= 2:
+                    pct_chg = (df['close'].iloc[-1] - df['close'].iloc[-2]) / df['close'].iloc[-2] * 100
+                    stock_performance.append({
+                        "code": ts_code,
+                        "name": stock_name,
+                        "pct_chg": pct_chg
+                    })
+                else:
+                    stock_performance.append({
+                        "code": ts_code,
+                        "name": stock_name,
+                        "pct_chg": 0
+                    })
+            except Exception as e:
+                print(f"计算涨跌幅失败 {ts_code}: {e}")
+                stock_performance.append({
+                    "code": ts_code,
+                    "name": stock_name,
+                    "pct_chg": 0
+                })
         
-        print(f"✅ 用户 {user_id} 龙头股缓存已更新，共 {leader_count} 个板块")
-        return True, f"龙头股已更新，共 {leader_count} 个板块"
-        
-    except Exception as e:
-        print(f"保存龙头股缓存失败: {e}")
-        return False, f"保存失败: {str(e)}"
+        # 按涨跌幅排序，取第一名作为龙头股
+        if stock_performance:
+            stock_performance.sort(key=lambda x: x.get('pct_chg', 0), reverse=True)
+            leader = stock_performance[0]
+            
+            # 保存到缓存表
+            data = {
+                "user_id": user_id,
+                "sector_name": sector_name,
+                "leader_code": leader.get('code', ''),
+                "leader_name": leader.get('name', ''),
+                "leader_pct": round(leader.get('pct_chg', 0), 2),
+                "calculated_at": datetime.now().isoformat()
+            }
+            response = requests.post(cache_url, headers=headers, json=data)
+            if response.status_code in [200, 201]:
+                leader_count += 1
+                print(f"✅ 板块 {sector_name} 龙头股: {leader.get('name')} ({leader.get('pct_chg', 0):.2f}%)")
+            else:
+                print(f"❌ 保存失败: {response.text}")
+    
+    print(f"✅ 用户 {user_id} 龙头股缓存已更新，共 {leader_count} 个板块")
+    return True, f"龙头股已更新，共 {leader_count} 个板块"
 
 
 def get_leader_stocks_from_cache(user_id: str, access_token: str = None) -> List[Dict]:
@@ -1560,6 +1614,127 @@ def refresh_leader_stocks_for_all_users() -> Tuple[bool, str]:
         
     except Exception as e:
         return False, f"批量更新失败: {str(e)}"
+
+# ==================== 从 Tushare 获取板块成分股 ====================
+
+def fetch_sector_stocks_from_tushare(sector_name: str) -> List[Dict]:
+    """
+    从 Tushare 获取板块成分股
+    返回: [{"stock_code": "000001.SZ", "stock_name": "平安银行"}, ...]
+    """
+    if not TUSHARE_AVAILABLE:
+        print(f"Tushare 不可用，无法获取板块 {sector_name} 的成分股")
+        return []
+    
+    try:
+        # 1. 获取概念板块列表，查找板块代码
+        concept_df = TUSHARE_PRO.concept()
+        if concept_df is None or concept_df.empty:
+            print("获取概念板块列表失败")
+            return []
+        
+        # 查找板块id（支持精确匹配和模糊匹配）
+        concept_row = concept_df[concept_df['name'] == sector_name]
+        if concept_row.empty:
+            # 尝试模糊匹配
+            concept_row = concept_df[concept_df['name'].str.contains(sector_name, na=False)]
+        
+        if concept_row.empty:
+            print(f"未找到板块: {sector_name}")
+            return []
+        
+        concept_id = concept_row.iloc[0]['code']
+        print(f"找到板块 {sector_name} 的代码: {concept_id}")
+        
+        # 2. 获取板块成分股
+        df = TUSHARE_PRO.concept_detail(id=concept_id)
+        
+        if df is None or df.empty:
+            print(f"板块 {sector_name} 无成分股数据")
+            return []
+        
+        result = []
+        for _, row in df.iterrows():
+            ts_code = row.get('ts_code', '')
+            name = row.get('name', '')
+            if ts_code:
+                # 确保股票名称不为空
+                if not name:
+                    name = get_stock_name_from_tushare(ts_code)
+                result.append({
+                    "stock_code": ts_code,
+                    "stock_name": name
+                })
+        
+        print(f"✅ 获取板块 {sector_name} 成分股成功，共 {len(result)} 只股票")
+        return result
+        
+    except Exception as e:
+        print(f"获取板块成分股失败 {sector_name}: {e}")
+        return []
+
+
+def save_sector_stocks_to_db(user_id: str, sector_name: str, stocks: List[Dict], access_token: str = None) -> bool:
+    """
+    保存板块成分股到数据库
+    先删除该用户该板块的旧数据，再插入新数据
+    """
+    if not user_id or user_id == "admin":
+        return False
+    
+    try:
+        headers = get_supabase_headers(use_secret=True)
+        url = f"{SUPABASE_URL}/rest/v1/user_sector_stocks"
+        
+        # 先删除旧数据
+        delete_url = f"{SUPABASE_URL}/rest/v1/user_sector_stocks?user_id=eq.{user_id}&sector_name=eq.{sector_name}"
+        requests.delete(delete_url, headers=headers)
+        
+        if not stocks:
+            return True
+        
+        # 插入新数据
+        for idx, stock in enumerate(stocks):
+            data = {
+                "user_id": user_id,
+                "sector_name": sector_name,
+                "stock_code": stock.get('stock_code', ''),
+                "stock_name": stock.get('stock_name', ''),
+                "rank": idx + 1,
+                "updated_at": datetime.now().isoformat()
+            }
+            response = requests.post(url, headers=headers, json=data)
+            if response.status_code not in [200, 201]:
+                print(f"保存成分股失败: {response.text}")
+                return False
+        
+        print(f"✅ 保存板块 {sector_name} 成分股成功，共 {len(stocks)} 只")
+        return True
+        
+    except Exception as e:
+        print(f"保存成分股失败: {e}")
+        return False
+
+
+def get_user_sector_stocks_from_db(user_id: str, sector_name: str, access_token: str = None) -> List[Dict]:
+    """
+    从数据库读取用户指定板块的成分股
+    返回: [{"stock_code": "000001.SZ", "stock_name": "平安银行", "rank": 1}, ...]
+    """
+    if not user_id or user_id == "admin":
+        return []
+    
+    try:
+        headers = get_supabase_headers(access_token=access_token) if access_token else get_supabase_headers(use_secret=True)
+        url = f"{SUPABASE_URL}/rest/v1/user_sector_stocks?user_id=eq.{user_id}&sector_name=eq.{sector_name}&order=rank.asc"
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code == 200:
+            return response.json()
+        return []
+    except Exception as e:
+        print(f"读取成分股失败: {e}")
+        return []
 
 print("第1部分加载完成")
 print("=" * 60)
