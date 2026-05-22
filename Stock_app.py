@@ -1512,16 +1512,46 @@ def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple
     如果没有，尝试从 Tushare 实时获取
     最后如果还是失败，尝试从 HOT_SECTORS 获取（仅限预置板块）
     """
+    st.write("🚨 save_leader_stocks_to_cache 被调用")
     print(f"🔍 save_leader_stocks_to_cache 被调用, user_id={user_id}")
     
     if not user_id or user_id == "admin":
         return False, "无效用户"
     
-    # 获取用户的「我的热点板块」
-    preset_sectors = get_user_preset_sectors_from_db(user_id, access_token)
+    # ========== 自动清理无效的预设板块 ==========
+    try:
+        # 获取 Tushare 中的有效板块名称列表
+        concept_df = TUSHARE_PRO.concept()
+        valid_sector_names = set(concept_df['name'].tolist()) if concept_df is not None else set()
+        st.write(f"📊 Tushare 有效板块数量: {len(valid_sector_names)}")
+        
+        # 获取用户的预设板块
+        preset_sectors = get_user_preset_sectors_from_db(user_id, access_token)
+        
+        # 找出无效的板块
+        invalid_sectors = []
+        for sector in preset_sectors:
+            sector_name = sector.get('sector_name')
+            if sector_name not in valid_sector_names:
+                invalid_sectors.append(sector_name)
+                st.write(f"⚠️ 发现无效板块: {sector_name}，将自动删除")
+        
+        # 删除无效板块
+        for sector_name in invalid_sectors:
+            delete_user_preset_sector(user_id, sector_name, access_token)
+            st.write(f"🗑️ 已删除无效板块: {sector_name}")
+        
+        if invalid_sectors:
+            st.warning(f"已自动删除 {len(invalid_sectors)} 个无效板块（不在 Tushare 中）")
+            # 重新获取预设板块
+            preset_sectors = get_user_preset_sectors_from_db(user_id, access_token)
+    
+    except Exception as e:
+        st.error(f"清理无效板块失败: {e}")
+    # ========== 清理结束 ==========
     
     if not preset_sectors:
-        print(f"⚠️ 没有预设板块")
+        st.write(f"⚠️ 没有预设板块")
         return False, "没有热点板块"
     
     headers = get_supabase_headers(use_secret=True)
@@ -1537,6 +1567,7 @@ def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple
         if not sector_name:
             continue
         
+        st.write(f"🔄 处理板块: {sector_name}")
         print(f"🔄 处理板块: {sector_name}")
         
         # ========== 1. 优先从 user_sector_stocks 表读取成分股 ==========
@@ -1556,8 +1587,10 @@ def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple
                     st.write(f"✅ 成功获取 {len(members)} 只成分股并保存")
                     print(f"✅ 从 Tushare 获取到 {len(members)} 只成分股")
                 else:
+                    st.write(f"⚠️ Tushare 未返回成分股: {sector_name}")
                     print(f"⚠️ Tushare 未返回成分股: {sector_name}")
             except Exception as e:
+                st.write(f"❌ Tushare 获取失败: {e}")
                 print(f"❌ Tushare 获取失败: {e}")
         
         # ========== 3. 如果还没有，从 HOT_SECTORS 获取（降级，仅限预置板块） ==========
@@ -1572,12 +1605,15 @@ def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple
                     "stock_code": code,
                     "stock_name": name
                 })
+            st.write(f"📋 使用 HOT_SECTORS 预置数据: {len(members)} 只成分股")
             print(f"📋 使用 HOT_SECTORS 预置数据: {len(members)} 只成分股")
         
         if not members:
+            st.write(f"⚠️ 无法获取板块 {sector_name} 的成分股，跳过")
             print(f"⚠️ 无法获取板块 {sector_name} 的成分股，跳过")
             continue
         
+        st.write(f"📋 板块 {sector_name} 有 {len(members)} 只成分股")
         print(f"📋 板块 {sector_name} 有 {len(members)} 只成分股")
         
         # ========== 计算每只股票的涨跌幅 ==========
@@ -1632,10 +1668,13 @@ def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple
             response = requests.post(cache_url, headers=headers, json=data)
             if response.status_code in [200, 201]:
                 leader_count += 1
+                st.write(f"✅ {sector_name} 龙头股: {leader.get('name')} ({leader.get('pct_chg', 0):.2f}%)")
                 print(f"✅ {sector_name} 龙头股: {leader.get('name')} ({leader.get('pct_chg', 0):.2f}%)")
             else:
+                st.write(f"❌ 保存失败: {response.text}")
                 print(f"❌ 保存失败: {response.text}")
     
+    st.write(f"✅ 龙头股缓存已更新，共 {leader_count} 个板块")
     print(f"✅ 龙头股缓存已更新，共 {leader_count} 个板块")
     return True, f"龙头股已更新，共 {leader_count} 个板块"
 
