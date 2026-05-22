@@ -1211,7 +1211,10 @@ def get_user_preset_sectors_from_db(user_id: str, access_token: str = None) -> L
     从数据库获取用户预设的板块（最多10个）
     返回: [{"sector_name": "光模块/CPO", "sector_code": "...", ...}, ...]
     """
+    print(f"🔍 DEBUG: get_user_preset_sectors_from_db, user_id={user_id}")
+    
     if not user_id or user_id == "admin":
+        print(f"⚠️ 无效用户: {user_id}")
         return []
     
     try:
@@ -1220,10 +1223,16 @@ def get_user_preset_sectors_from_db(user_id: str, access_token: str = None) -> L
         response = requests.get(url, headers=headers)
         
         if response.status_code == 200:
-            return response.json()
-        return []
+            result = response.json()
+            print(f"📊 返回 {len(result)} 个预设板块")
+            for item in result:
+                print(f"   - {item.get('sector_name')}")
+            return result
+        else:
+            print(f"❌ HTTP {response.status_code}: {response.text}")
+            return []
     except Exception as e:
-        print(f"获取用户预设板块失败: {e}")
+        print(f"❌ 获取用户预设板块失败: {e}")
         return []
 
 
@@ -1409,14 +1418,16 @@ def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple
     计算用户所有热点板块的龙头股，并保存到缓存表
     返回: (success, message)
     """
+    print(f"🔍 DEBUG: save_leader_stocks_to_cache 被调用, user_id={user_id}")
     if not user_id or user_id == "admin":
         return False, "无效用户"
     
     try:
         # 获取用户的"我的热点板块"
         preset_sectors = get_user_preset_sectors_from_db(user_id, access_token)
-        
+        print(f"📊 获取到预设板块: {len(preset_sectors)} 个")
         if not preset_sectors:
+            print(f"⚠️ 没有预设板块")
             return False, "没有热点板块"
         
         headers = get_supabase_headers(use_secret=True)
