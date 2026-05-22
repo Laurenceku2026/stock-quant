@@ -1503,55 +1503,87 @@ def get_user_hot_sectors_from_db(user_id: str, access_token: str = None) -> List
     except Exception as e:
         print(f"获取用户热点板块失败: {e}")
         return []
+
+#-------        
+def get_sector_stocks_for_leader(user_id: str, sector_name: str, access_token: str = None) -> List[Dict]:
+    """
+    获取板块成分股（优先使用东方财富，降级使用本地缓存）
+    """
+    # 1. 优先从 user_sector_stocks 表读取
+    members = get_user_sector_stocks_from_db(user_id, sector_name, access_token)
+    if members:
+        return members
+    
+    # 2. 从东方财富 dc_member 获取
+    try:
+        today = datetime.now().strftime("%Y%m%d")
+        trade_date = get_previous_trade_date(today)
+        
+        df_idx = TUSHARE_PRO.dc_index(trade_date=trade_date, idx_type='概念板块')
+        if df_idx is not None and not df_idx.empty:
+            matched = df_idx[df_idx['name'].str.contains(sector_name, na=False, case=False)]
+            if matched.empty:
+                matched = df_idx[df_idx['name'] == sector_name]
+            
+            if not matched.empty:
+                ts_code = matched.iloc[0]['ts_code']
+                df_member = TUSHARE_PRO.dc_member(ts_code=ts_code, trade_date=trade_date)
+                
+                if df_member is None or df_member.empty:
+                    df_member = TUSHARE_PRO.dc_member(ts_code=ts_code)
+                    if df_member is not None and not df_member.empty:
+                        df_member = df_member.sort_values('trade_date', ascending=False).drop_duplicates('con_code')
+                
+                if df_member is not None and not df_member.empty:
+                    result = []
+                    for _, row in df_member.iterrows():
+                        stock_code = row.get('con_code', '')
+                        stock_name = row.get('name', '')
+                        if stock_code:
+                            if not stock_name:
+                                stock_name = get_stock_name_from_tushare(stock_code)
+                            result.append({
+                                "stock_code": stock_code,
+                                "stock_name": stock_name
+                            })
+                    if result:
+                        # 保存到数据库
+                        save_sector_stocks_to_db(user_id, sector_name, result, access_token)
+                        return result
+    except Exception as e:
+        print(f"东方财富获取失败: {e}")
+    
+    # 3. 降级：从 HOT_SECTORS 获取
+    if sector_name in HOT_SECTORS:
+        sector_info = HOT_SECTORS[sector_name]
+        stocks = sector_info.get("stocks", [])
+        names = sector_info.get("names", [])
+        result = []
+        for i, code in enumerate(stocks):
+            name = names[i] if i < len(names) else code
+            result.append({
+                "stock_code": code,
+                "stock_name": name
+            })
+        # 保存到数据库
+        save_sector_stocks_to_db(user_id, sector_name, result, access_token)
+        return result
+    
+    return []
 # ==================== 龙头股缓存函数 ====================
 
 def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple[bool, str]:
     """
     计算用户所有热点板块的龙头股，并保存到缓存表
-    优先从 user_sector_stocks 表读取成分股（用户添加板块时保存）
-    如果没有，尝试从 Tushare 实时获取
-    最后如果还是失败，尝试从 HOT_SECTORS 获取（仅限预置板块）
+    优先使用东方财富 dc_member 获取成分股
     """
-    st.write("🚨 save_leader_stocks_to_cache 被调用")
-    print(f"🔍 save_leader_stocks_to_cache 被调用, user_id={user_id}")
-    
     if not user_id or user_id == "admin":
         return False, "无效用户"
     
-    # ========== 自动清理无效的预设板块 ==========
-    try:
-        # 获取 Tushare 中的有效板块名称列表
-        concept_df = TUSHARE_PRO.concept()
-        valid_sector_names = set(concept_df['name'].tolist()) if concept_df is not None else set()
-        st.write(f"📊 Tushare 有效板块数量: {len(valid_sector_names)}")
-        
-        # 获取用户的预设板块
-        preset_sectors = get_user_preset_sectors_from_db(user_id, access_token)
-        
-        # 找出无效的板块
-        invalid_sectors = []
-        for sector in preset_sectors:
-            sector_name = sector.get('sector_name')
-            if sector_name not in valid_sector_names:
-                invalid_sectors.append(sector_name)
-                st.write(f"⚠️ 发现无效板块: {sector_name}，将自动删除")
-        
-        # 删除无效板块
-        for sector_name in invalid_sectors:
-            delete_user_preset_sector(user_id, sector_name, access_token)
-            st.write(f"🗑️ 已删除无效板块: {sector_name}")
-        
-        if invalid_sectors:
-            st.warning(f"已自动删除 {len(invalid_sectors)} 个无效板块（不在 Tushare 中）")
-            # 重新获取预设板块
-            preset_sectors = get_user_preset_sectors_from_db(user_id, access_token)
-    
-    except Exception as e:
-        st.error(f"清理无效板块失败: {e}")
-    # ========== 清理结束 ==========
+    # 获取用户的预设板块
+    preset_sectors = get_user_preset_sectors_from_db(user_id, access_token)
     
     if not preset_sectors:
-        st.write(f"⚠️ 没有预设板块")
         return False, "没有热点板块"
     
     headers = get_supabase_headers(use_secret=True)
@@ -1567,56 +1599,13 @@ def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple
         if not sector_name:
             continue
         
-        st.write(f"🔄 处理板块: {sector_name}")
-        print(f"🔄 处理板块: {sector_name}")
-        
-        # ========== 1. 优先从 user_sector_stocks 表读取成分股 ==========
-        members = get_user_sector_stocks_from_db(user_id, sector_name, access_token)
-        
-        # ========== 2. 如果没有，尝试从 Tushare 实时获取 ==========
-        if not members:
-            st.write(f"📡 从 Tushare 获取板块 {sector_name} 成分股...")
-            print(f"📡 从 Tushare 获取板块 {sector_name} 成分股...")
-            try:
-                stocks = fetch_sector_stocks_from_tushare(sector_name)
-                st.write(f"📡 Tushare 返回: {len(stocks) if stocks else 0} 只成分股")
-                if stocks:
-                    # 保存到数据库，下次直接使用
-                    save_sector_stocks_to_db(user_id, sector_name, stocks, access_token)
-                    members = stocks
-                    st.write(f"✅ 成功获取 {len(members)} 只成分股并保存")
-                    print(f"✅ 从 Tushare 获取到 {len(members)} 只成分股")
-                else:
-                    st.write(f"⚠️ Tushare 未返回成分股: {sector_name}")
-                    print(f"⚠️ Tushare 未返回成分股: {sector_name}")
-            except Exception as e:
-                st.write(f"❌ Tushare 获取失败: {e}")
-                print(f"❌ Tushare 获取失败: {e}")
-        
-        # ========== 3. 如果还没有，从 HOT_SECTORS 获取（降级，仅限预置板块） ==========
-        if not members and sector_name in HOT_SECTORS:
-            sector_info = HOT_SECTORS[sector_name]
-            stocks = sector_info.get("stocks", [])
-            names = sector_info.get("names", [])
-            members = []
-            for i, code in enumerate(stocks):
-                name = names[i] if i < len(names) else code
-                members.append({
-                    "stock_code": code,
-                    "stock_name": name
-                })
-            st.write(f"📋 使用 HOT_SECTORS 预置数据: {len(members)} 只成分股")
-            print(f"📋 使用 HOT_SECTORS 预置数据: {len(members)} 只成分股")
+        # 获取板块成分股（优先使用东方财富）
+        members = get_sector_stocks_for_leader(user_id, sector_name, access_token)
         
         if not members:
-            st.write(f"⚠️ 无法获取板块 {sector_name} 的成分股，跳过")
-            print(f"⚠️ 无法获取板块 {sector_name} 的成分股，跳过")
             continue
         
-        st.write(f"📋 板块 {sector_name} 有 {len(members)} 只成分股")
-        print(f"📋 板块 {sector_name} 有 {len(members)} 只成分股")
-        
-        # ========== 计算每只股票的涨跌幅 ==========
+        # 计算每只股票的涨跌幅
         stock_performance = []
         for member in members[:10]:
             ts_code = member.get('stock_code')
@@ -1624,11 +1613,9 @@ def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple
             if not ts_code:
                 continue
             
-            # 获取股票名称（如果为空）
             if not stock_name or stock_name == ts_code:
                 stock_name = get_stock_name_from_tushare(ts_code)
             
-            # 计算涨跌幅（最近5日）
             try:
                 df = get_stock_daily(ts_code, days=5)
                 if not df.empty and len(df) >= 2:
@@ -1644,18 +1631,20 @@ def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple
                         "name": stock_name,
                         "pct_chg": 0
                     })
-            except Exception as e:
-                print(f"计算涨跌幅失败 {ts_code}: {e}")
+            except:
                 stock_performance.append({
                     "code": ts_code,
                     "name": stock_name,
                     "pct_chg": 0
                 })
         
-        # ========== 取涨幅最高的作为龙头股 ==========
         if stock_performance:
             stock_performance.sort(key=lambda x: x.get('pct_chg', 0), reverse=True)
             leader = stock_performance[0]
+            
+            # 先删除该板块的旧记录
+            delete_url = f"{SUPABASE_URL}/rest/v1/user_leader_stocks_cache?user_id=eq.{user_id}&sector_name=eq.{sector_name}"
+            requests.delete(delete_url, headers=headers)
             
             data = {
                 "user_id": user_id,
@@ -1668,14 +1657,7 @@ def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple
             response = requests.post(cache_url, headers=headers, json=data)
             if response.status_code in [200, 201]:
                 leader_count += 1
-                st.write(f"✅ {sector_name} 龙头股: {leader.get('name')} ({leader.get('pct_chg', 0):.2f}%)")
-                print(f"✅ {sector_name} 龙头股: {leader.get('name')} ({leader.get('pct_chg', 0):.2f}%)")
-            else:
-                st.write(f"❌ 保存失败: {response.text}")
-                print(f"❌ 保存失败: {response.text}")
     
-    st.write(f"✅ 龙头股缓存已更新，共 {leader_count} 个板块")
-    print(f"✅ 龙头股缓存已更新，共 {leader_count} 个板块")
     return True, f"龙头股已更新，共 {leader_count} 个板块"
 
 
