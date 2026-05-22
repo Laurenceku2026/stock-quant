@@ -4659,7 +4659,7 @@ def render_market_brief():
         
         st.markdown("---")
 
-    # ==================== 动态龙头股关注模块 ====================
+    # ==================== 龙头股关注模块（从缓存读取） ====================
     with st.container():
         st.markdown("#### 🎯 龙头股关注")
         st.caption("基于您的「我的热点板块」，实时计算的领涨龙头股（每日自动更新）")
@@ -4679,26 +4679,11 @@ def render_market_brief():
                     else:
                         st.error(msg)
         
-        # 从缓存读取龙头股数据
+        # 从缓存读取龙头股数据（直接显示，不等待计算）
         leader_stocks = get_leader_stocks_from_cache(
             st.session_state.user_id,
             st.session_state.get("access_token")
         )
-        
-        if not leader_stocks:
-            # 如果没有缓存数据，尝试生成
-            with st.spinner("正在生成龙头股数据..."):
-                success, msg = save_leader_stocks_to_cache(
-                    st.session_state.user_id,
-                    st.session_state.get("access_token")
-                )
-                if success:
-                    leader_stocks = get_leader_stocks_from_cache(
-                        st.session_state.user_id,
-                        st.session_state.get("access_token")
-                    )
-                else:
-                    st.info("暂无龙头股数据，请先添加热点板块")
         
         if leader_stocks:
             # 显示龙头股列表（卡片式布局）
@@ -4744,14 +4729,34 @@ def render_market_brief():
                 if leader_stocks:
                     last_update = leader_stocks[0].get('calculated_at', '')
                     if last_update:
-                        st.caption(f"📅 数据更新时间: {last_update[:16]}")
+                        try:
+                            # 格式化时间显示
+                            from datetime import datetime
+                            dt = datetime.fromisoformat(last_update.replace('Z', '+00:00'))
+                            st.caption(f"📅 数据更新时间: {dt.strftime('%Y-%m-%d %H:%M')}")
+                        except:
+                            st.caption(f"📅 数据更新时间: {last_update[:16]}")
                 
                 st.caption("💡 龙头股按最近5日涨跌幅排序，取板块内涨幅最高的股票")
                 st.caption("📌 点击刷新按钮可重新计算龙头股")
             else:
                 st.caption("暂无龙头股数据")
         else:
-            st.info("暂无龙头股数据，请先在上方「我的热点板块」中添加板块")
+            # 没有缓存数据时，显示提示和生成按钮
+            st.info("暂无龙头股缓存数据，请点击刷新按钮生成")
+            
+            # 提供直接生成按钮
+            if st.button("生成龙头股数据", key="generate_leader_stocks", use_container_width=True):
+                with st.spinner("正在生成龙头股数据..."):
+                    success, msg = save_leader_stocks_to_cache(
+                        st.session_state.user_id,
+                        st.session_state.get("access_token")
+                    )
+                    if success:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
         
         st.markdown("---")
 
