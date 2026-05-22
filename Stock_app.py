@@ -1468,7 +1468,7 @@ def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple
     计算用户所有热点板块的龙头股，并保存到缓存表
     优先从 user_sector_stocks 表读取成分股（用户添加板块时保存）
     如果没有，尝试从 Tushare 实时获取
-    最后降级到 HOT_SECTORS 预置数据
+    最后如果还是失败，尝试从 HOT_SECTORS 获取（仅限预置板块）
     """
     print(f"🔍 save_leader_stocks_to_cache 被调用, user_id={user_id}")
     
@@ -1503,14 +1503,19 @@ def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple
         # ========== 2. 如果没有，尝试从 Tushare 实时获取 ==========
         if not members:
             print(f"📡 从 Tushare 获取板块 {sector_name} 成分股...")
-            stocks = fetch_sector_stocks_from_tushare(sector_name)
-            if stocks:
-                # 保存到数据库，下次直接使用
-                save_sector_stocks_to_db(user_id, sector_name, stocks, access_token)
-                members = stocks
-                print(f"✅ 从 Tushare 获取到 {len(members)} 只成分股")
+            try:
+                stocks = fetch_sector_stocks_from_tushare(sector_name)
+                if stocks:
+                    # 保存到数据库，下次直接使用
+                    save_sector_stocks_to_db(user_id, sector_name, stocks, access_token)
+                    members = stocks
+                    print(f"✅ 从 Tushare 获取到 {len(members)} 只成分股")
+                else:
+                    print(f"⚠️ Tushare 未返回成分股: {sector_name}")
+            except Exception as e:
+                print(f"❌ Tushare 获取失败: {e}")
         
-        # ========== 3. 如果还没有，从 HOT_SECTORS 获取（降级） ==========
+        # ========== 3. 如果还没有，从 HOT_SECTORS 获取（降级，仅限预置板块） ==========
         if not members and sector_name in HOT_SECTORS:
             sector_info = HOT_SECTORS[sector_name]
             stocks = sector_info.get("stocks", [])
