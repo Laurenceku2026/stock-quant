@@ -4946,25 +4946,7 @@ def render_market_brief():
                 st.success("已恢复默认热点板块")
                 st.rerun()
             
-            # 获取热度分、涨跌幅、领涨股映射（从 system 热点数据中获取）
-            user_hot_sectors = get_user_hot_sectors_from_db(
-                st.session_state.user_id,
-                st.session_state.get("access_token")
-            )
-            system_hot_map = {}
-            if user_hot_sectors:
-                for s in user_hot_sectors:
-                    if s.get('source') == 'system':
-                        system_hot_map[s.get('sector_name')] = {
-                            "hot_score": s.get('hot_score', 50),
-                            "pct_chg": s.get('pct_chg', 0),
-                            "leading_name": s.get('leading_name', '--')
-                        }
-            
-            # 添加板块区域（带搜索的下拉菜单）
-            st.markdown("**➕ 添加板块**")
-            
-            # 获取东方财富板块列表（用于下拉菜单）
+            # 获取东方财富板块列表（用于下拉菜单和实时数据）
             all_sectors = get_eastmoney_concept_list()
             if not all_sectors:
                 # 降级使用预置板块
@@ -4973,6 +4955,39 @@ def render_market_brief():
                                {"name": "半导体", "code": "BK0800.DC"},
                                {"name": "算力", "code": "BK0800.DC"},
                                {"name": "机器人", "code": "BK0800.DC"}]
+            
+            # 创建板块名称到数据的映射
+            sector_data_map = {}
+            for s in all_sectors:
+                sector_data_map[s.get('name')] = {
+                    "code": s.get('code', ''),
+                    "pct_chg": 0,
+                    "leading_name": "--"
+                }
+            
+            # 实时获取每个板块的涨跌幅和领涨股（只获取预设板块，避免过多API调用）
+            try:
+                st.write("📡 正在获取板块实时数据...")
+                # 获取所有东方财富板块的实时数据
+                today = datetime.now().strftime("%Y%m%d")
+                trade_date = get_previous_trade_date(today)
+                df_idx = TUSHARE_PRO.dc_index(trade_date=trade_date, idx_type='概念板块')
+                
+                if df_idx is not None and not df_idx.empty:
+                    # 建立名称到数据的映射
+                    for _, row in df_idx.iterrows():
+                        name = row.get('name', '')
+                        if name in sector_data_map:
+                            sector_data_map[name]["pct_chg"] = row.get('pct_change', 0)
+                            leading_code = row.get('leading_code', '')
+                            if leading_code:
+                                sector_data_map[name]["leading_name"] = get_stock_name_from_tushare(leading_code)
+                st.write("✅ 数据获取完成")
+            except Exception as e:
+                st.write(f"⚠️ 获取实时数据失败: {e}")
+            
+            # 添加板块区域（带搜索的下拉菜单）
+            st.markdown("**➕ 添加板块**")
             
             sector_options = [s.get('name') for s in all_sectors if s.get('name')]
             
@@ -5018,25 +5033,30 @@ def render_market_brief():
             
             # 显示当前热点板块列表（每行带删除按钮）
             if preset_sectors:
-                # 按热度分排序
-                sorted_sectors = []
+                # 构建显示数据
+                display_sectors = []
                 for sector in preset_sectors:
                     sector_name = sector.get('sector_name')
-                    sector_info = system_hot_map.get(sector_name, {"hot_score": 50, "pct_chg": 0, "leading_name": "--"})
-                    sorted_sectors.append({
+                    sector_info = sector_data_map.get(sector_name, {"code": "", "pct_chg": 0, "leading_name": "--"})
+                    # 计算热度分（基于涨跌幅）
+                    pct_chg = sector_info.get("pct_chg", 0)
+                    hot_score = min(100, max(0, 50 + pct_chg * 5))
+                    
+                    display_sectors.append({
                         "sector_name": sector_name,
                         "sector_code": sector.get('sector_code', ''),
-                        "hot_score": sector_info.get("hot_score", 50),
-                        "pct_chg": sector_info.get("pct_chg", 0),
+                        "hot_score": hot_score,
+                        "pct_chg": pct_chg,
                         "leading_name": sector_info.get("leading_name", "--")
                     })
-                sorted_sectors.sort(key=lambda x: x.get('hot_score', 50), reverse=True)
+                # 按热度分排序
+                display_sectors.sort(key=lambda x: x.get('hot_score', 50), reverse=True)
                 
-                st.markdown(f"**当前热点板块（共 {len(sorted_sectors)} 个）**")
+                st.markdown(f"**当前热点板块（共 {len(display_sectors)} 个）**")
                 st.caption("💡 板块按热度分排序，热度越高排名越靠前")
                 
                 # 使用列布局显示，每行带删除按钮
-                for idx, sector in enumerate(sorted_sectors):
+                for idx, sector in enumerate(display_sectors):
                     col1, col2, col3, col4, col5 = st.columns([0.5, 2, 1.5, 1.5, 1])
                     
                     with col1:
@@ -5081,8 +5101,6 @@ def render_market_brief():
             # 提示上限
             if len(preset_sectors) >= 20:
                 st.warning("⚠️ 热点板块已达上限（20个）")
-        
-        st.markdown("---")
 
     # ==================== 龙头股关注模块（从缓存读取） ====================
     with st.container():
