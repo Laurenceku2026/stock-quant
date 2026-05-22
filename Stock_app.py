@@ -1733,7 +1733,8 @@ def refresh_leader_stocks_for_all_users() -> Tuple[bool, str]:
 
 def fetch_sector_stocks_from_tushare(sector_name: str) -> List[Dict]:
     """
-    从 Tushare 获取板块成分股（支持模糊匹配）
+    从 Tushare 获取板块成分股
+    优先使用 dc_member（东方财富，6000分），降级使用 concept_detail
     返回: [{"stock_code": "000001.SZ", "stock_name": "平安银行"}, ...]
     """
     st.write(f"🔍 [TUSHARE_DEBUG] 获取板块: {sector_name}")
@@ -1742,70 +1743,94 @@ def fetch_sector_stocks_from_tushare(sector_name: str) -> List[Dict]:
         st.error(f"❌ Tushare 不可用")
         return []
     
+    # ========== 方法1: 使用 dc_member (东方财富，6000分) ==========
     try:
-        # 1. 获取概念板块列表
-        concept_df = TUSHARE_PRO.concept()
-        if concept_df is None or concept_df.empty:
-            st.error(f"❌ 获取概念板块列表失败")
-            return []
+        # 1.1 获取 dc_index 板块列表，查找板块 ts_code
+        st.write(f"📡 从东方财富获取板块 {sector_name} 信息...")
         
-        # 2. 查找板块（支持精确匹配和模糊匹配）
-        # 先尝试精确匹配
-        concept_row = concept_df[concept_df['name'] == sector_name]
+        # 获取最新交易日
+        today = datetime.now().strftime("%Y%m%d")
+        trade_date = get_previous_trade_date(today)
         
-        # 如果精确匹配失败，尝试模糊匹配（包含关系）
-        if concept_row.empty:
-            st.write(f"⚠️ 精确匹配失败，尝试模糊匹配...")
-            # 查找包含该关键词的板块
-            concept_row = concept_df[concept_df['name'].str.contains(sector_name, na=False, case=False)]
+        df_idx = TUSHARE_PRO.dc_index(trade_date=trade_date, idx_type='概念板块')
+        
+        if df_idx is not None and not df_idx.empty:
+            # 查找匹配的板块
+            matched = df_idx[df_idx['name'].str.contains(sector_name, na=False, case=False)]
+            if matched.empty:
+                # 尝试精确匹配
+                matched = df_idx[df_idx['name'] == sector_name]
             
-            # 如果模糊匹配有多个结果，选择最相关的一个（长度最接近的）
-            if len(concept_row) > 1:
-                # 按名称长度排序，选择最接近的
-                concept_row = concept_row.iloc[[
-                    (concept_row['name'].str.len() - len(sector_name)).abs().argmin()
-                ]]
-        
-        if concept_row.empty:
-            st.error(f"❌ 未找到板块: {sector_name}")
-            return []
-        
-        concept_id = concept_row.iloc[0]['code']
-        matched_name = concept_row.iloc[0]['name']
-        st.write(f"✅ 匹配到板块: {matched_name} (代码: {concept_id})")
-        
-        # 3. 获取板块成分股
-        df = TUSHARE_PRO.concept_detail(id=concept_id)
-        if df is None or df.empty:
-            st.warning(f"⚠️ 板块 {sector_name} 无成分股数据")
-            return []
-        
-        st.write(f"✅ 获取到 {len(df)} 只成分股")
-        
-        result = []
-        for idx, row in df.iterrows():
-            ts_code = row.get('ts_code', '')
-            name = row.get('name', '')
-            if ts_code:
-                if not name:
-                    name = get_stock_name_from_tushare(ts_code)
-                result.append({
-                    "stock_code": ts_code,
-                    "stock_name": name
-                })
-        
-        # 保存匹配到的板块名称到数据库（供后续使用）
-        if matched_name != sector_name:
-            st.write(f"📝 记录映射: {sector_name} -> {matched_name}")
-            # 可选：保存映射关系，下次直接使用
-        
-        return result
-        
+            if not matched.empty:
+                ts_code = matched.iloc[0]['ts_code']
+                matched_name = matched.iloc[0]['name']
+                st.write(f"✅ 匹配到东方财富板块: {matched_name} (代码: {ts_code})")
+                
+                # 1.2 获取板块成分股
+                df_member = TUSHARE_PRO.dc_member(ts_code=ts_code, trade_date=trade_date)
+                
+                if df_member is None or df_member.empty:
+                    # 如果不指定日期，获取所有数据后取最新
+                    df_member = TUSHARE_PRO.dc_member(ts_code=ts_code)
+                    if df_member is not None and not df_member.empty:
+                        # 按 trade_date 去重，取最新
+                        df_member = df_member.sort_values('trade_date', ascending=False).drop_duplicates('con_code')
+                
+                if df_member is not None and not df_member.empty:
+                    result = []
+                    for _, row in df_member.iterrows():
+                        ts_code_stock = row.get('con_code', '')
+                        name = row.get('name', '')
+                        if ts_code_stock:
+                            if not name:
+                                name = get_stock_name_from_tushare(ts_code_stock)
+                            result.append({
+                                "stock_code": ts_code_stock,
+                                "stock_name": name
+                            })
+                    st.write(f"✅ 从东方财富获取到 {len(result)} 只成分股")
+                    return result
+                else:
+                    st.write(f"⚠️ 东方财富板块 {sector_name} 无成分股数据")
+            else:
+                st.write(f"⚠️ 未找到匹配的东方财富板块: {sector_name}")
     except Exception as e:
-        st.error(f"❌ 获取板块成分股失败: {e}")
-        import traceback
-        st.code(traceback.format_exc())
-        return []
+        st.write(f"⚠️ 东方财富接口失败: {e}")
+    
+    # ========== 方法2: 降级使用 concept_detail (Tushare 自有，2000分) ==========
+    st.write(f"📡 降级使用 Tushare concept_detail 获取 {sector_name} 成分股...")
+    try:
+        concept_df = TUSHARE_PRO.concept()
+        if concept_df is not None and not concept_df.empty:
+            concept_row = concept_df[concept_df['name'] == sector_name]
+            if concept_row.empty:
+                concept_row = concept_df[concept_df['name'].str.contains(sector_name, na=False, case=False)]
+            
+            if not concept_row.empty:
+                concept_id = concept_row.iloc[0]['code']
+                df = TUSHARE_PRO.concept_detail(id=concept_id)
+                if df is not None and not df.empty:
+                    result = []
+                    for _, row in df.iterrows():
+                        ts_code = row.get('ts_code', '')
+                        name = row.get('name', '')
+                        if ts_code:
+                            if not name:
+                                name = get_stock_name_from_tushare(ts_code)
+                            result.append({
+                                "stock_code": ts_code,
+                                "stock_name": name
+                            })
+                    st.write(f"✅ 从 concept_detail 获取到 {len(result)} 只成分股")
+                    return result
+                else:
+                    st.write(f"⚠️ concept_detail 无成分股数据")
+            else:
+                st.write(f"⚠️ 未找到板块: {sector_name}")
+    except Exception as e:
+        st.write(f"❌ concept_detail 失败: {e}")
+    
+    return []
 
 
 def save_sector_stocks_to_db(user_id: str, sector_name: str, stocks: List[Dict], access_token: str = None) -> bool:
