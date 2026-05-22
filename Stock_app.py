@@ -1035,41 +1035,37 @@ def get_concept_stocks_tushare(concept_name: str) -> List[Dict]:
         print(f"Tushare 获取板块成分失败 {concept_name}: {e}")
         return []
 
-
+#-----
 def get_hot_concepts_tushare(limit: int = 10) -> List[Dict]:
-    """获取热门概念板块列表（直接使用 concept 接口）"""
-        
+    """获取热门概念板块列表（只返回在 concept 中存在的板块）"""
     if not TUSHARE_AVAILABLE:
         return []
     
     try:
-        # concept 接口直接返回板块列表及涨跌幅
-        df = TUSHARE_PRO.concept()
-        
-        if df is None or df.empty:
+        # 获取概念板块列表
+        concept_df = TUSHARE_PRO.concept()
+        if concept_df is None or concept_df.empty:
             return []
         
-        # 直接使用 concept 接口返回的涨跌幅数据
+        # 获取涨跌幅数据（需要另外获取）
+        # 简化版：直接使用 concept 的板块名称，涨跌幅需要单独获取
         hot_concepts = []
-        for _, row in df.iterrows():
+        for _, row in concept_df.iterrows():
             concept_name = row.get('name', '')
             concept_code = row.get('code', '')
-            # concept 接口有 pct_change 字段吗？检查一下
-            pct_chg = row.get('pct_change', 0) if 'pct_change' in df.columns else 0
             
+            # 可以在这里调用 dc_index 获取涨跌幅
             hot_concepts.append({
                 "name": concept_name,
                 "code": concept_code,
-                "pct_chg": round(pct_chg, 2) if pct_chg else 0
+                "pct_chg": 0,  # 需要单独获取
+                "hot_score": 50
             })
         
-        # 按涨跌幅排序
-        hot_concepts.sort(key=lambda x: x.get('pct_chg', 0), reverse=True)
-        result = hot_concepts[:limit]
-        
-        return result
+        return hot_concepts[:limit]
         
     except Exception as e:
+        print(f"获取热门板块失败: {e}")
         return []
 
 
@@ -1136,6 +1132,7 @@ def get_tushare_concept_members(concept_code: str) -> List[str]:
 def get_system_hot_sectors_from_tushare(limit: int = 10) -> List[Dict]:
     """
     从 Tushare dc_index 接口获取系统热度板块（基于昨日涨跌幅）
+    只返回在 concept 接口中存在的板块（确保名称一致）
     返回: [{"name": "板块名称", "code": "板块代码", "pct_chg": 涨跌幅, "hot_score": 热度分, "leading_stock": 领涨股代码, "leading_name": 领涨股名称}, ...]
     """
     if not TUSHARE_AVAILABLE:
@@ -1147,19 +1144,51 @@ def get_system_hot_sectors_from_tushare(limit: int = 10) -> List[Dict]:
         today = datetime.now().strftime("%Y%m%d")
         trade_date = get_previous_trade_date(today)
         
-        # 调用 dc_index 接口获取概念板块行情
-        df = TUSHARE_PRO.dc_index(trade_date=trade_date, idx_type='概念板块')
-        
-        if df is None or df.empty:
+        # 1. 获取 dc_index 数据（涨跌幅、领涨股等）
+        df_hot = TUSHARE_PRO.dc_index(trade_date=trade_date, idx_type='概念板块')
+        if df_hot is None or df_hot.empty:
             print(f"获取板块行情失败，日期: {trade_date}")
             return []
         
+        # 2. 获取 concept 标准板块名称列表（用于过滤）
+        concept_df = TUSHARE_PRO.concept()
+        if concept_df is None or concept_df.empty:
+            print("获取概念板块列表失败")
+            return []
+        
+        concept_names = set(concept_df['name'].tolist())
+        print(f"📊 concept 标准板块数量: {len(concept_names)}")
+        
+        # 3. 创建名称映射（处理可能的名称差异）
+        # 例如：dc_index 中的名称可能需要映射到 concept 中的名称
+        name_mapping = {}
+        for concept_name in concept_names:
+            # 如果 concept 名称包含在 dc_index 名称中，或反之，建立映射
+            for _, row in df_hot.iterrows():
+                hot_name = row.get('name', '')
+                if hot_name == concept_name:
+                    name_mapping[hot_name] = concept_name
+                elif concept_name in hot_name or hot_name in concept_name:
+                    # 模糊匹配，优先使用 concept 中的名称
+                    if hot_name not in name_mapping:
+                        name_mapping[hot_name] = concept_name
+        
+        # 4. 处理热度数据，只保留在 concept 中存在的板块
         hot_sectors = []
-        for _, row in df.iterrows():
-            sector_name = row.get('name', '')
+        for _, row in df_hot.iterrows():
+            hot_name = row.get('name', '')
+            
+            # 获取标准名称
+            standard_name = name_mapping.get(hot_name, hot_name)
+            
+            # 检查是否在 concept 中存在
+            if standard_name not in concept_names:
+                print(f"⚠️ 跳过板块（不在 concept 中）: {hot_name} -> {standard_name}")
+                continue
+            
             sector_code = row.get('code', '')
             pct_chg = row.get('pct_change', 0)
-            leading_code = row.get('leading_code', '')  # 领涨股代码
+            leading_code = row.get('leading_code', '')
             
             # 计算热度分：涨10%得100分，跌10%得0分，中性50分
             hot_score = min(100, max(0, 50 + pct_chg * 5))
@@ -1170,7 +1199,7 @@ def get_system_hot_sectors_from_tushare(limit: int = 10) -> List[Dict]:
                 leading_name = get_stock_name_from_tushare(leading_code)
             
             hot_sectors.append({
-                "name": sector_name,
+                "name": standard_name,  # 使用标准名称
                 "code": sector_code,
                 "pct_chg": round(pct_chg, 2),
                 "hot_score": round(hot_score, 2),
@@ -1180,10 +1209,14 @@ def get_system_hot_sectors_from_tushare(limit: int = 10) -> List[Dict]:
         
         # 按涨跌幅排序
         hot_sectors.sort(key=lambda x: x.get('pct_chg', 0), reverse=True)
+        
+        print(f"✅ 过滤后保留 {len(hot_sectors)} 个有效板块（共 {len(df_hot)} 个原始板块）")
         return hot_sectors[:limit]
         
     except Exception as e:
         print(f"获取系统热度板块失败: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 
