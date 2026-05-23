@@ -1415,15 +1415,11 @@ def delete_user_preset_sector(user_id: str, sector_name: str, access_token: str 
 def merge_and_save_user_hot_sectors(user_id: str, access_token: str = None) -> Tuple[bool, str]:
     """
     合并用户预设板块 + 系统热度TOP10，保存到 user_hot_sectors 表
-    用户预设板块优先，系统热度板块补充（去重）
-    最终结果：用户预设最多10个 + 系统热度最多10个 = 最多20个
-    同时保存涨跌幅和领涨股信息
+    所有板块都标记为 system 源，供 Tab2 读取
     """
-    # 允许管理员用户（跳过检查，使用 admin 作为临时用户）
     if not user_id:
         return False, "无效用户"
     
-    # 如果是管理员模式，跳过同步（管理员没有自己的热点板块）
     if user_id == "admin":
         print("管理员模式下跳过热点板块同步")
         return True, "管理员模式无需同步"
@@ -1431,34 +1427,38 @@ def merge_and_save_user_hot_sectors(user_id: str, access_token: str = None) -> T
     try:
         # 1. 获取用户预设板块（限制最多10个）
         preset_sectors = get_user_preset_sectors_from_db(user_id, access_token)
-        preset_sectors = preset_sectors[:10]  # 确保不超过10个
+        preset_sectors = preset_sectors[:10]
         print(f"用户预设板块: {len(preset_sectors)} 个")
         
-        # 2. 获取系统热度TOP10（限制最多10个）- 直接从东方财富获取
+        # 2. 获取系统热度TOP10
         system_hot_sectors = get_system_hot_sectors_from_tushare(limit=10)
         print(f"系统热度板块: {len(system_hot_sectors)} 个")
         
-        # 3. 合并去重（用户预设优先）
+        # 创建系统热度映射
+        system_hot_map = {hs.get('name'): hs for hs in system_hot_sectors}
+        
+        # 3. 合并去重
         merged = []
         seen_names = set()
         
-        # 先添加用户预设板块
+        # 先添加用户预设板块（标记为 system）
         for idx, sector in enumerate(preset_sectors):
             sector_name = sector.get('sector_name')
             if sector_name and sector_name not in seen_names:
                 seen_names.add(sector_name)
-                # 查找系统热度中是否有该板块的热度数据
-                hot_score = 50
-                pct_chg = 0
-                leading_stock = ""
-                leading_name = ""
-                for hs in system_hot_sectors:
-                    if hs.get('name') == sector_name:
-                        hot_score = hs.get('hot_score', 50)
-                        pct_chg = hs.get('pct_chg', 0)
-                        leading_stock = hs.get('leading_stock', '')
-                        leading_name = hs.get('leading_name', '')
-                        break
+                
+                # 如果在系统热度中有数据，使用真实数据；否则使用默认值
+                if sector_name in system_hot_map:
+                    hs = system_hot_map[sector_name]
+                    hot_score = hs.get('hot_score', 50)
+                    pct_chg = hs.get('pct_chg', 0)
+                    leading_stock = hs.get('leading_stock', '')
+                    leading_name = hs.get('leading_name', '--')
+                else:
+                    hot_score = 50
+                    pct_chg = 0
+                    leading_stock = ''
+                    leading_name = '--'
                 
                 merged.append({
                     "sector_name": sector_name,
@@ -1467,17 +1467,12 @@ def merge_and_save_user_hot_sectors(user_id: str, access_token: str = None) -> T
                     "pct_chg": pct_chg,
                     "leading_stock": leading_stock,
                     "leading_name": leading_name,
-                    "source": "user",
+                    "source": "system",  # 关键修改：改为 system
                     "rank_order": idx
                 })
         
-        # 再添加系统热度板块（去重，最多补充到总数20个）
-        remaining_slots = 20 - len(merged)
-        added_system_count = 0
-        
+        # 再添加系统热度板块（去重）
         for idx, sector in enumerate(system_hot_sectors):
-            if added_system_count >= remaining_slots:
-                break
             sector_name = sector.get('name')
             if sector_name and sector_name not in seen_names:
                 seen_names.add(sector_name)
@@ -1487,22 +1482,17 @@ def merge_and_save_user_hot_sectors(user_id: str, access_token: str = None) -> T
                     "hot_score": sector.get('hot_score', 50),
                     "pct_chg": sector.get('pct_chg', 0),
                     "leading_stock": sector.get('leading_stock', ''),
-                    "leading_name": sector.get('leading_name', ''),
+                    "leading_name": sector.get('leading_name', '--'),
                     "source": "system",
                     "rank_order": len(merged)
                 })
-                added_system_count += 1
         
-        print(f"合并后共 {len(merged)} 个板块（用户预设{len(preset_sectors)} + 系统热度{added_system_count}）")
-        
-        # 4. 保存到数据库（包含涨跌幅和领涨股）
+        # 4. 保存到数据库
         headers = get_supabase_headers(use_secret=True)
         url = f"{SUPABASE_URL}/rest/v1/user_hot_sectors"
         
-        # 先删除旧数据
         requests.delete(url, headers=headers, params=f"user_id=eq.{user_id}")
         
-        # 插入新数据
         for item in merged:
             data = {
                 "user_id": user_id,
@@ -1521,7 +1511,7 @@ def merge_and_save_user_hot_sectors(user_id: str, access_token: str = None) -> T
                 print(f"保存热点板块失败: {response.text}")
         
         print(f"✅ 用户 {user_id} 热点板块合并完成，共 {len(merged)} 个板块")
-        return True, f"热点板块已更新，共 {len(merged)} 个板块（预设{len(preset_sectors)} + 热度{added_system_count}）"
+        return True, f"热点板块已更新，共 {len(merged)} 个板块"
         
     except Exception as e:
         print(f"合并热点板块失败: {e}")
