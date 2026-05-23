@@ -5141,7 +5141,7 @@ def render_market_brief():
                 st.warning("⚠️ 热点板块已达上限（20个）")
 
     #------
-    # ==================== 龙头股关注模块（从缓存读取） ====================
+    # ==================== 龙头股关注模块（从缓存读取，不自动计算） ====================
     with st.container():
         st.markdown("#### 🎯 龙头股关注")
         st.caption("基于您的「我的热点板块」，实时计算的领涨龙头股（每日自动更新）")
@@ -5161,7 +5161,7 @@ def render_market_brief():
                     else:
                         st.error(msg)
         
-        # 从缓存读取龙头股数据
+        # 从缓存读取龙头股数据（只读，不自动生成）
         leader_stocks = get_leader_stocks_from_cache(
             st.session_state.user_id,
             st.session_state.get("access_token")
@@ -5199,7 +5199,6 @@ def render_market_brief():
                         if idx < len(leader_data):
                             item = leader_data[idx]
                             with col:
-                                # 使用 st.container 替代 HTML
                                 with st.container(border=True):
                                     st.markdown(f"**{item['sector_name']}**")
                                     st.markdown(f"### {item['leader_name']}")
@@ -5221,21 +5220,8 @@ def render_market_brief():
             else:
                 st.caption("暂无龙头股数据")
         else:
-            # 没有缓存数据时，显示提示和生成按钮
-            st.info("暂无龙头股缓存数据，请点击刷新按钮生成")
-            
-            # 提供直接生成按钮
-            if st.button("生成龙头股数据", key="generate_leader_stocks", use_container_width=True):
-                with st.spinner("正在生成龙头股数据..."):
-                    success, msg = save_leader_stocks_to_cache(
-                        st.session_state.user_id,
-                        st.session_state.get("access_token")
-                    )
-                    if success:
-                        st.success(msg)
-                        st.rerun()
-                    else:
-                        st.error(msg)
+            # 只显示提示，不自动生成
+            st.info("暂无龙头股缓存数据，请点击「刷新龙头股」按钮生成")
         
         st.markdown("---")
 
