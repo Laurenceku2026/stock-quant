@@ -2805,12 +2805,12 @@ def create_checkout_session(user_id: str, user_email: str, price_id: str) -> Tup
         stripe.api_key = STRIPE_SECRET_KEY
         
         base_url = "https://stock-quant-strategy.streamlit.app"
-        success_url = f"{base_url}?payment_success=true"  # 🔄 简化
+        success_url = f"{base_url}?payment_success=true"
         cancel_url = f"{base_url}?payment_canceled=true"
         
         session = stripe.checkout.Session.create(
             customer_email=user_email,
-            client_reference_id=user_id,  # 🔑 关键：添加这一行！
+            client_reference_id=user_id,  # 🔑 关键：告诉 Webhook 是哪个用户
             payment_method_types=['card'],
             line_items=[{'price': price_id, 'quantity': 1}],
             mode='subscription',
