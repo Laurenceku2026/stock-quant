@@ -1416,6 +1416,7 @@ def merge_and_save_user_hot_sectors(user_id: str, access_token: str = None) -> T
     """
     合并用户预设板块 + 系统热度TOP10，保存到 user_hot_sectors 表
     所有板块都标记为 system 源，供 Tab2 读取
+    如果预设板块不在系统热度中，单独查询东方财富获取数据
     """
     if not user_id:
         return False, "无效用户"
@@ -1425,13 +1426,13 @@ def merge_and_save_user_hot_sectors(user_id: str, access_token: str = None) -> T
         return True, "管理员模式无需同步"
     
     try:
-        # 1. 获取用户预设板块（限制最多10个）
+        # 1. 获取用户预设板块
         preset_sectors = get_user_preset_sectors_from_db(user_id, access_token)
         preset_sectors = preset_sectors[:10]
         print(f"用户预设板块: {len(preset_sectors)} 个")
         
-        # 2. 获取系统热度TOP10
-        system_hot_sectors = get_system_hot_sectors_from_tushare(limit=10)
+        # 2. 获取系统热度TOP30（扩大范围，确保覆盖更多板块）
+        system_hot_sectors = get_system_hot_sectors_from_tushare(limit=30)
         print(f"系统热度板块: {len(system_hot_sectors)} 个")
         
         # 创建系统热度映射
@@ -1441,35 +1442,74 @@ def merge_and_save_user_hot_sectors(user_id: str, access_token: str = None) -> T
         merged = []
         seen_names = set()
         
-        # 先添加用户预设板块（标记为 system）
+        # 先处理用户预设板块
         for idx, sector in enumerate(preset_sectors):
             sector_name = sector.get('sector_name')
-            if sector_name and sector_name not in seen_names:
-                seen_names.add(sector_name)
-                
-                # 如果在系统热度中有数据，使用真实数据；否则使用默认值
-                if sector_name in system_hot_map:
-                    hs = system_hot_map[sector_name]
-                    hot_score = hs.get('hot_score', 50)
-                    pct_chg = hs.get('pct_chg', 0)
-                    leading_stock = hs.get('leading_stock', '')
-                    leading_name = hs.get('leading_name', '--')
-                else:
-                    hot_score = 50
+            if not sector_name:
+                continue
+            
+            if sector_name in seen_names:
+                continue
+            seen_names.add(sector_name)
+            
+            # 检查是否在系统热度中
+            if sector_name in system_hot_map:
+                hs = system_hot_map[sector_name]
+                hot_score = hs.get('hot_score', 50)
+                pct_chg = hs.get('pct_chg', 0)
+                leading_stock = hs.get('leading_stock', '')
+                leading_name = hs.get('leading_name', '--')
+                print(f"  ✅ {sector_name} 在系统热度中，使用缓存数据")
+            else:
+                # 不在系统热度中，单独查询东方财富
+                print(f"  🔍 {sector_name} 不在系统热度中，单独查询...")
+                try:
+                    # 获取上一个交易日日期
+                    from datetime import datetime, timedelta
+                    today = datetime.now().strftime("%Y%m%d")
+                    dt = datetime.strptime(today, "%Y%m%d")
+                    weekday = dt.weekday()
+                    if weekday == 0:
+                        prev_dt = dt - timedelta(days=3)
+                    elif weekday == 6:
+                        prev_dt = dt - timedelta(days=2)
+                    else:
+                        prev_dt = dt - timedelta(days=1)
+                    trade_date = prev_dt.strftime("%Y%m%d")
+                    
+                    # 单独查询该板块
+                    df = TUSHARE_PRO.dc_index(name=sector_name, idx_type='概念板块', trade_date=trade_date)
+                    
+                    if df is not None and not df.empty:
+                        row = df.iloc[0]
+                        pct_chg = row.get('pct_change', 0)
+                        leading_code = row.get('leading_code', '')
+                        hot_score = min(100, max(0, 50 + pct_chg * 5))
+                        leading_name = get_stock_name_from_tushare(leading_code) if leading_code else '--'
+                        print(f"  ✅ {sector_name} 单独查询成功: 涨跌={pct_chg:.2f}%, 领涨={leading_name}")
+                    else:
+                        pct_chg = 0
+                        hot_score = 50
+                        leading_stock = ''
+                        leading_name = '--'
+                        print(f"  ⚠️ {sector_name} 单独查询无数据，使用默认值")
+                except Exception as e:
+                    print(f"  ❌ {sector_name} 单独查询失败: {e}")
                     pct_chg = 0
+                    hot_score = 50
                     leading_stock = ''
                     leading_name = '--'
-                
-                merged.append({
-                    "sector_name": sector_name,
-                    "sector_code": sector.get('sector_code', ''),
-                    "hot_score": hot_score,
-                    "pct_chg": pct_chg,
-                    "leading_stock": leading_stock,
-                    "leading_name": leading_name,
-                    "source": "system",  # 关键修改：改为 system
-                    "rank_order": idx
-                })
+            
+            merged.append({
+                "sector_name": sector_name,
+                "sector_code": sector.get('sector_code', ''),
+                "hot_score": hot_score,
+                "pct_chg": pct_chg,
+                "leading_stock": leading_stock,
+                "leading_name": leading_name,
+                "source": "system",
+                "rank_order": idx
+            })
         
         # 再添加系统热度板块（去重）
         for idx, sector in enumerate(system_hot_sectors):
@@ -1491,8 +1531,10 @@ def merge_and_save_user_hot_sectors(user_id: str, access_token: str = None) -> T
         headers = get_supabase_headers(use_secret=True)
         url = f"{SUPABASE_URL}/rest/v1/user_hot_sectors"
         
+        # 先删除旧数据
         requests.delete(url, headers=headers, params=f"user_id=eq.{user_id}")
         
+        # 插入新数据
         for item in merged:
             data = {
                 "user_id": user_id,
