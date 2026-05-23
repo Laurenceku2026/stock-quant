@@ -1452,6 +1452,12 @@ def merge_and_save_user_hot_sectors(user_id: str, access_token: str = None) -> T
                 continue
             seen_names.add(sector_name)
             
+            # 初始化默认值
+            hot_score = 50
+            pct_chg = 0
+            leading_stock = ''
+            leading_name = '--'
+            
             # 检查是否在系统热度中
             if sector_name in system_hot_map:
                 hs = system_hot_map[sector_name]
@@ -1463,6 +1469,7 @@ def merge_and_save_user_hot_sectors(user_id: str, access_token: str = None) -> T
             else:
                 # 不在系统热度中，单独查询东方财富
                 print(f"  🔍 {sector_name} 不在系统热度中，单独查询...")
+                
                 try:
                     # 获取上一个交易日日期
                     from datetime import datetime, timedelta
@@ -1485,20 +1492,13 @@ def merge_and_save_user_hot_sectors(user_id: str, access_token: str = None) -> T
                         pct_chg = row.get('pct_change', 0)
                         leading_code = row.get('leading_code', '')
                         hot_score = min(100, max(0, 50 + pct_chg * 5))
+                        leading_stock = leading_code
                         leading_name = get_stock_name_from_tushare(leading_code) if leading_code else '--'
                         print(f"  ✅ {sector_name} 单独查询成功: 涨跌={pct_chg:.2f}%, 领涨={leading_name}")
                     else:
-                        pct_chg = 0
-                        hot_score = 50
-                        leading_stock = ''
-                        leading_name = '--'
                         print(f"  ⚠️ {sector_name} 单独查询无数据，使用默认值")
                 except Exception as e:
                     print(f"  ❌ {sector_name} 单独查询失败: {e}")
-                    pct_chg = 0
-                    hot_score = 50
-                    leading_stock = ''
-                    leading_name = '--'
             
             merged.append({
                 "sector_name": sector_name,
