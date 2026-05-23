@@ -5161,26 +5161,19 @@ def render_market_brief():
                     else:
                         st.error(msg)
         
-        # 从缓存读取龙头股数据（直接显示，不等待计算）
+        # 从缓存读取龙头股数据
         leader_stocks = get_leader_stocks_from_cache(
             st.session_state.user_id,
             st.session_state.get("access_token")
         )
-        # 🔍 调试：直接打印原始数据
-        st.write(f"DEBUG: {leader_stocks}")
-        st.write("🔍 原始缓存数据:")
-        st.json(leader_stocks if leader_stocks else [])
-
+        
         if leader_stocks:
-            st.write(f"🔍 DEBUG: leader_stocks 有 {len(leader_stocks)} 条数据")
-            # 显示龙头股列表（卡片式布局）
+            # 构建显示数据
             leader_data = []
             for item in leader_stocks:
                 sector_name = item.get('sector_name', '')
                 leader_name = item.get('leader_name', '--')
                 leader_pct = item.get('leader_pct', 0)
-                
-                st.write(f"🔍 DEBUG: 处理 {sector_name} -> {leader_name} ({leader_pct}%)")
                 
                 # 格式化涨跌幅显示
                 if leader_pct > 0:
@@ -5189,8 +5182,7 @@ def render_market_brief():
                     pct_display = f"🔴 {leader_pct:.2f}%"
                 else:
                     pct_display = f"⚪ 0.00%"
-
-                st.write(f"🔍 DEBUG: leader_data 有 {len(leader_data)} 条数据")
+                
                 leader_data.append({
                     "sector_name": sector_name,
                     "leader_name": leader_name,
@@ -5198,8 +5190,7 @@ def render_market_brief():
                 })
             
             if leader_data:
-                st.write("🔍 DEBUG: 开始渲染卡片...")
-                # 使用列布局显示，每行显示2个
+                # 使用原生组件显示，每行显示2个
                 cols_per_row = 2
                 for i in range(0, len(leader_data), cols_per_row):
                     cols = st.columns(cols_per_row)
@@ -5208,20 +5199,17 @@ def render_market_brief():
                         if idx < len(leader_data):
                             item = leader_data[idx]
                             with col:
-                                st.markdown(f"""
-                                <div style="border:1px solid #ddd; border-radius:10px; padding:10px; margin:5px;">
-                                    <strong>{item['sector_name']}</strong><br>
-                                    <span style="font-size:1.2rem;">{item['leader_name']}</span><br>
-                                    <span style="font-size:0.9rem;">{item['leader_pct']}</span>
-                                </div>
-                                """, unsafe_allow_html=True)
+                                # 使用 st.container 替代 HTML
+                                with st.container(border=True):
+                                    st.markdown(f"**{item['sector_name']}**")
+                                    st.markdown(f"### {item['leader_name']}")
+                                    st.caption(item['leader_pct'])
                 
                 # 显示最后更新时间
                 if leader_stocks:
                     last_update = leader_stocks[0].get('calculated_at', '')
                     if last_update:
                         try:
-                            # 格式化时间显示
                             from datetime import datetime
                             dt = datetime.fromisoformat(last_update.replace('Z', '+00:00'))
                             st.caption(f"📅 数据更新时间: {dt.strftime('%Y-%m-%d %H:%M')}")
