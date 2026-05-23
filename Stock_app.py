@@ -2805,23 +2805,18 @@ def create_checkout_session(user_id: str, user_email: str, price_id: str) -> Tup
         stripe.api_key = STRIPE_SECRET_KEY
         
         base_url = "https://stock-quant-strategy.streamlit.app"
-        
-        # 关键：在 success_url 中传递用户信息，确保支付完成后能识别用户
-        success_url = f"{base_url}?session_id={{CHECKOUT_SESSION_ID}}&user_id={user_id}&email={user_email}"
-        cancel_url = f"{base_url}?canceled=true"
+        success_url = f"{base_url}?payment_success=true"  # 🔄 简化
+        cancel_url = f"{base_url}?payment_canceled=true"
         
         session = stripe.checkout.Session.create(
             customer_email=user_email,
+            client_reference_id=user_id,  # 🔑 关键：添加这一行！
             payment_method_types=['card'],
             line_items=[{'price': price_id, 'quantity': 1}],
             mode='subscription',
             success_url=success_url,
             cancel_url=cancel_url,
-            metadata={
-                'user_id': user_id,
-                'user_email': user_email,
-                'price_id': price_id
-            }
+            metadata={'user_id': user_id, 'price_id': price_id}
         )
         return session.url, None
     except Exception as e:
@@ -6918,63 +6913,26 @@ def render_top_buttons():
 
 def render_main_app():
     """渲染主页面（5个模块）"""
-    # 处理支付回调前，先恢复可能的登录状态
+    # 处理支付回调（Webhook 简化版）
     query_params = st.query_params
-    if "user_id" in query_params and "email" in query_params:
-        st.session_state.authenticated = True
-        st.session_state.user_id = query_params["user_id"]
-        st.session_state.user_email = query_params["email"]
-        # 清除URL参数，避免重复
+    
+    # 支付成功回调
+    if "payment_success" in query_params:
+        st.success("🎉 支付成功！正在验证...")
+        # 清除缓存，让页面重新从数据库读取用户状态
+        st.cache_data.clear()
         st.query_params.clear()
         st.rerun()
     
-    handle_stripe_callback()
-    # ===== 手动验证 Stripe 支付 =====
-    query_params = st.query_params
-    if "session_id" in query_params:
-        session_id = query_params["session_id"]
-        
-        st.warning("🔔 检测到支付会话，请点击下方按钮完成验证")
-        st.info(f"会话ID: {session_id[:30]}...")
-        
-        if st.button("✅ 手动验证支付并升级", type="primary", use_container_width=True):
-            try:
-                import stripe
-                stripe.api_key = STRIPE_SECRET_KEY
-                session = stripe.checkout.Session.retrieve(session_id)
-                
-                if session.payment_status == "paid":
-                    user_id = session.metadata.get("user_id")
-                    
-                    if user_id and user_id != "admin":
-                        headers = get_supabase_headers(use_secret=True)
-                        url = f"{SUPABASE_URL}/rest/v1/user_settings?user_id=eq.{user_id}"
-                        data = {"subscription_tier": "pro"}
-                        response = requests.patch(url, headers=headers, json=data)
-                        
-                        if response.status_code in [200, 204]:
-                            st.success("✅ 支付验证成功！您已是专业版用户")
-                            st.balloons()
-                            st.query_params.clear()
-                            time.sleep(2)
-                            st.rerun()
-                        else:
-                            st.error(f"更新失败: {response.text}")
-                    else:
-                        st.warning("用户信息验证失败，请重新登录")
-                else:
-                    st.warning(f"支付状态: {session.payment_status}，未完成")
-            except Exception as e:
-                st.error(f"验证失败: {e}")
-        
-        st.markdown("---")
-    # =================================
+    # 支付取消回调
+    if "payment_canceled" in query_params:
+        st.info("支付已取消")
+        st.query_params.clear()
     
+    # 付费墙
     if st.session_state.get("show_paywall", False):
         show_paywall()
         return
-    
-    handle_stripe_callback()  # 保留原有回调，两者并存
     
     # 获取用户名显示
     username = st.session_state.user_email.split('@')[0] if st.session_state.user_email else st.session_state.user_email
