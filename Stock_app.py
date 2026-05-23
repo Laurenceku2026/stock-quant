@@ -5140,90 +5140,10 @@ def render_market_brief():
             if len(preset_sectors) >= 20:
                 st.warning("⚠️ 热点板块已达上限（20个）")
 
-    #------
     # ==================== 龙头股关注模块（从缓存读取，不自动计算） ====================
-    with st.container():
-        st.markdown("#### 🎯 龙头股关注")
-        st.caption("基于您的「我的热点板块」，实时计算的领涨龙头股（每日自动更新）")
-        
-        # 刷新按钮
-        col_refresh1, col_refresh2, col_refresh3 = st.columns([3, 1, 3])
-        with col_refresh2:
-            if st.button("🔄 刷新龙头股", key="refresh_leader_stocks", use_container_width=True):
-                with st.spinner("正在重新计算龙头股..."):
-                    success, msg = refresh_leader_stocks_for_user(
-                        st.session_state.user_id,
-                        st.session_state.get("access_token")
-                    )
-                    if success:
-                        st.success(msg)
-                        st.rerun()
-                    else:
-                        st.error(msg)
-        
-        # 从缓存读取龙头股数据（只读，不自动生成）
-        leader_stocks = get_leader_stocks_from_cache(
-            st.session_state.user_id,
-            st.session_state.get("access_token")
-        )
-        
-        if leader_stocks:
-            # 构建显示数据
-            leader_data = []
-            for item in leader_stocks:
-                sector_name = item.get('sector_name', '')
-                leader_name = item.get('leader_name', '--')
-                leader_pct = item.get('leader_pct', 0)
-                
-                # 格式化涨跌幅显示
-                if leader_pct > 0:
-                    pct_display = f"🟢 +{leader_pct:.2f}%"
-                elif leader_pct < 0:
-                    pct_display = f"🔴 {leader_pct:.2f}%"
-                else:
-                    pct_display = f"⚪ 0.00%"
-                
-                leader_data.append({
-                    "sector_name": sector_name,
-                    "leader_name": leader_name,
-                    "leader_pct": pct_display
-                })
-            
-            if leader_data:
-                # 使用原生组件显示，每行显示2个
-                cols_per_row = 2
-                for i in range(0, len(leader_data), cols_per_row):
-                    cols = st.columns(cols_per_row)
-                    for j, col in enumerate(cols):
-                        idx = i + j
-                        if idx < len(leader_data):
-                            item = leader_data[idx]
-                            with col:
-                                with st.container(border=True):
-                                    st.markdown(f"**{item['sector_name']}**")
-                                    st.markdown(f"### {item['leader_name']}")
-                                    st.caption(item['leader_pct'])
-                
-                # 显示最后更新时间
-                if leader_stocks:
-                    last_update = leader_stocks[0].get('calculated_at', '')
-                    if last_update:
-                        try:
-                            from datetime import datetime
-                            dt = datetime.fromisoformat(last_update.replace('Z', '+00:00'))
-                            st.caption(f"📅 数据更新时间: {dt.strftime('%Y-%m-%d %H:%M')}")
-                        except:
-                            st.caption(f"📅 数据更新时间: {last_update[:16]}")
-                
-                st.caption("💡 龙头股按最近5日涨跌幅排序，取板块内涨幅最高的股票")
-                st.caption("📌 点击刷新按钮可重新计算龙头股")
-            else:
-                st.caption("暂无龙头股数据")
-        else:
-            # 只显示提示，不自动生成
-            st.info("暂无龙头股缓存数据，请点击「刷新龙头股」按钮生成")
-        
-        st.markdown("---")
+    
+ 
+# ==================End of 龙头股关注模块（从缓存读取，不自动计算） ====================
 
 # ==================== 模块2：推荐股票池 ====================
 
