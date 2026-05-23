@@ -5140,6 +5140,7 @@ def render_market_brief():
             if len(preset_sectors) >= 20:
                 st.warning("⚠️ 热点板块已达上限（20个）")
 
+    #------
     # ==================== 龙头股关注模块（从缓存读取） ====================
     with st.container():
         st.markdown("#### 🎯 龙头股关注")
@@ -5165,7 +5166,10 @@ def render_market_brief():
             st.session_state.user_id,
             st.session_state.get("access_token")
         )
-        
+        # 🔍 调试：直接打印原始数据
+        st.write("🔍 原始缓存数据:")
+        st.json(leader_stocks if leader_stocks else [])
+
         if leader_stocks:
             # 显示龙头股列表（卡片式布局）
             leader_data = []
