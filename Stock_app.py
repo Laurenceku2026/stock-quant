@@ -2980,7 +2980,7 @@ def render_login_form():
     # 检查支付成功（支持 payment_success 和 session_id 两种参数）
     if "payment_success" in query_params or "session_id" in query_params:
         st.success("🎉 支付成功！您已升级为专业版用户")
-        st.info("📌 请重新登录以激活专业版权限")
+        st.info("📌 请重新登录")
         # 清除参数，避免刷新后重复显示
         st.query_params.clear()
     
