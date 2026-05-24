@@ -6918,11 +6918,21 @@ def render_main_app():
     
     # 支付成功回调
     if "payment_success" in query_params:
-        st.success("🎉 支付成功！正在验证...")
-        # 清除缓存，让页面重新从数据库读取用户状态
-        st.cache_data.clear()
+        st.success("🎉 支付成功！您已升级为专业版用户")
+        st.info("📌 请重新登录以激活专业版权限")
+        
+        # 清除登录状态
+        st.session_state.authenticated = False
+        st.session_state.user_id = None
+        st.session_state.user_email = None
+        st.session_state.access_token = None
+        st.session_state.refresh_token = None
+        
+        # 清除 URL 参数
         st.query_params.clear()
-        st.rerun()
+        
+        # 停止渲染，让用户看到消息后手动点击登录
+        st.stop()
     
     # 支付取消回调
     if "payment_canceled" in query_params:
