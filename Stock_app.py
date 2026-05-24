@@ -2975,6 +2975,9 @@ def validate_stock_code(code: str) -> Tuple[bool, str]:
 # ==================== 登录/注册UI组件 ====================
 
 def render_login_form():
+    """显示登录表单"""
+    # 调试：打印所有参数
+    st.write("调试 - 当前 URL 参数:", dict(st.query_params))
     # 检查支付成功参数
     query_params = st.query_params
     if "payment_success" in query_params:
