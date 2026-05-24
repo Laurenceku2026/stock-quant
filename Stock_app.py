@@ -2976,15 +2976,15 @@ def validate_stock_code(code: str) -> Tuple[bool, str]:
 
 def render_login_form():
     """显示登录表单"""
-    # 调试：打印所有参数
-    st.write("调试 - 当前 URL 参数:", dict(st.query_params))
-    # 检查支付成功参数
     query_params = st.query_params
-    if "payment_success" in query_params:
+    
+    # 检查支付成功（支持 payment_success 和 session_id 两种参数）
+    if "payment_success" in query_params or "session_id" in query_params:
         st.success("🎉 支付成功！您已升级为专业版用户")
-        st.info("📌 请重新登录")
+        st.info("📌 请重新登录以激活专业版权限")
         # 清除参数，避免刷新后重复显示
         st.query_params.clear()
+    
     """显示登录表单"""
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
