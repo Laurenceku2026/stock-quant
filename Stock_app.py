@@ -2975,7 +2975,6 @@ def validate_stock_code(code: str) -> Tuple[bool, str]:
 # ==================== 登录/注册UI组件 ====================
 
 def render_login_form():
-    """显示登录表单"""
     query_params = st.query_params
     
     # 检查支付成功（支持 payment_success 和 session_id 两种参数）
@@ -2985,7 +2984,7 @@ def render_login_form():
         # 清除参数，避免刷新后重复显示
         st.query_params.clear()
     
-    """显示登录表单"""
+    #"""显示登录表单"""
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.markdown(f"<h1 style='text-align: center;'>{t()['app_title']}</h1>", unsafe_allow_html=True)
