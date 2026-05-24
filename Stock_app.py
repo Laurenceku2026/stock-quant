@@ -2975,6 +2975,13 @@ def validate_stock_code(code: str) -> Tuple[bool, str]:
 # ==================== 登录/注册UI组件 ====================
 
 def render_login_form():
+    # 检查支付成功参数
+    query_params = st.query_params
+    if "payment_success" in query_params:
+        st.success("🎉 支付成功！您已升级为专业版用户")
+        st.info("📌 请重新登录")
+        # 清除参数，避免刷新后重复显示
+        st.query_params.clear()
     """显示登录表单"""
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
