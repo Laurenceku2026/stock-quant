@@ -1,0 +1,31 @@
+name: Keep Alive - Prevent Schedule Disable
+
+# GitHub 会在公开仓库 60 天无活动后禁用 schedule。
+# 本 workflow 每月触发一次，并用空 commit 重置 inactivity 计时。
+# 也可在 Actions 页手动 Run workflow。
+
+on:
+  schedule:
+    - cron: '0 12 1 * *'  # 每月 1 日 UTC 12:00
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    # 仅在本仓库运行，避免 fork 误触发
+    if: github.repository == 'Laurenceku2026/stock-quant'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Empty commit to reset inactivity timer
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keep scheduled workflows alive"
+          git push

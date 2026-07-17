@@ -79,6 +79,15 @@ def get_current_time_str() -> str:
     """获取当前北京时间字符串（精确到分钟）"""
     return datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M")
 
+def get_beijing_trade_date(days_ago: int = 0) -> str:
+    """获取北京时间交易日字符串 YYYYMMDD（供 Tushare 使用）"""
+    return (get_beijing_time() - timedelta(days=days_ago)).strftime("%Y%m%d")
+
+def encode_supabase_eq(value: str) -> str:
+    """对 PostgREST eq 过滤值做 URL 编码（支持 光模块/CPO 等）"""
+    import urllib.parse
+    return urllib.parse.quote(str(value), safe="")
+
 def utc_to_beijing_str(utc_time_str: str) -> str:
     """将UTC时间字符串转换为北京时间字符串"""
     if not utc_time_str:
@@ -187,10 +196,12 @@ _required_state = {
 for _key, _default in _required_state.items():
     if _key not in st.session_state:
         st.session_state[_key] = _default
-# ==================== 管理员配置 ====================
-ADMIN_USERNAME = "Laurence_ku"
-ADMIN_PASSWORD = "Ku_product$2026"
-ADMIN_EMAIL = "Techlife2027@gmail.com"
+# ==================== 管理员配置（必须放在 Streamlit secrets，勿硬编码） ====================
+ADMIN_USERNAME = st.secrets.get("ADMIN_USERNAME", "Laurence_ku")
+ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "")
+ADMIN_EMAIL = st.secrets.get("ADMIN_EMAIL", "")
+if not ADMIN_PASSWORD:
+    print("⚠️ ADMIN_PASSWORD 未在 secrets 中配置，管理员登录将不可用")
 
 # ==================== 常量定义 ====================
 FREE_TRIAL_LIMIT = 30
@@ -689,7 +700,7 @@ def sync_hot_sectors_to_db() -> Tuple[bool, str]:
         return False, f"积分不足（当前{TUSHARE_INTEGRAL}分，需要2000分）"
     
     try:
-        trade_date = datetime.now().strftime("%Y%m%d")
+        trade_date = get_beijing_trade_date()
         df = TUSHARE_PRO.limit_cpt_list(trade_date=trade_date)
         
         if df is None or df.empty:
@@ -1103,7 +1114,7 @@ def get_tushare_concept_daily(concept_code: str, days: int = 5) -> pd.DataFrame:
         return pd.DataFrame()
     
     try:
-        end_date = datetime.now().strftime("%Y%m%d")
+        end_date = get_beijing_trade_date()
         start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
         df = TUSHARE_PRO.concept_daily(concept_code=concept_code, start_date=start_date, end_date=end_date)
         if df is not None and not df.empty:
@@ -1141,7 +1152,7 @@ def get_system_hot_sectors_from_tushare(limit: int = 10) -> List[Dict]:
     
     try:
         # 获取上一个交易日日期
-        today = datetime.now().strftime("%Y%m%d")
+        today = get_beijing_trade_date()
         trade_date = get_previous_trade_date(today)
         
         # 1. 获取 dc_index 数据（涨跌幅、领涨股等）
@@ -1229,7 +1240,7 @@ def get_eastmoney_concept_list() -> List[Dict]:
     
     try:
         # 获取上一个交易日日期
-        today = datetime.now().strftime("%Y%m%d")
+        today = get_beijing_trade_date()
         trade_date = get_previous_trade_date(today)
         
         # 从 dc_index 获取东方财富概念板块列表
@@ -1385,20 +1396,21 @@ def delete_user_preset_sector(user_id: str, sector_name: str, access_token: str 
     """
     try:
         headers = get_supabase_headers(use_secret=True)
+        encoded = encode_supabase_eq(sector_name)
         
         # 1. 删除预设板块记录
-        url = f"{SUPABASE_URL}/rest/v1/user_preset_sectors?user_id=eq.{user_id}&sector_name=eq.{sector_name}"
+        url = f"{SUPABASE_URL}/rest/v1/user_preset_sectors?user_id=eq.{user_id}&sector_name=eq.{encoded}"
         response = requests.delete(url, headers=headers)
         
         if response.status_code not in [200, 204]:
             return False, f"删除预设板块失败: {response.text}"
         
         # 2. 删除该板块的成分股数据
-        stocks_url = f"{SUPABASE_URL}/rest/v1/user_sector_stocks?user_id=eq.{user_id}&sector_name=eq.{sector_name}"
+        stocks_url = f"{SUPABASE_URL}/rest/v1/user_sector_stocks?user_id=eq.{user_id}&sector_name=eq.{encoded}"
         requests.delete(stocks_url, headers=headers)
         
         # 3. 删除该板块的龙头股缓存
-        cache_url = f"{SUPABASE_URL}/rest/v1/user_leader_stocks_cache?user_id=eq.{user_id}&sector_name=eq.{sector_name}"
+        cache_url = f"{SUPABASE_URL}/rest/v1/user_leader_stocks_cache?user_id=eq.{user_id}&sector_name=eq.{encoded}"
         requests.delete(cache_url, headers=headers)
         
         # 4. 重新合并热点板块（更新 user_hot_sectors 表）
@@ -1473,7 +1485,7 @@ def merge_and_save_user_hot_sectors(user_id: str, access_token: str = None) -> T
                 try:
                     # 获取上一个交易日日期
                     from datetime import datetime, timedelta
-                    today = datetime.now().strftime("%Y%m%d")
+                    today = get_beijing_trade_date()
                     dt = datetime.strptime(today, "%Y%m%d")
                     weekday = dt.weekday()
                     if weekday == 0:
@@ -1598,7 +1610,7 @@ def get_sector_stocks_for_leader(user_id: str, sector_name: str, access_token: s
     
     # 2. 从东方财富 dc_member 获取
     try:
-        today = datetime.now().strftime("%Y%m%d")
+        today = get_beijing_trade_date()
         trade_date = get_previous_trade_date(today)
         
         df_idx = TUSHARE_PRO.dc_index(trade_date=trade_date, idx_type='概念板块')
@@ -1687,9 +1699,9 @@ def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple
         if not members:
             continue
         
-        # 计算每只股票的涨跌幅
+        # 计算每只股票的涨跌幅（扩大候选池，避免只看 rank 前 10）
         stock_performance = []
-        for member in members[:10]:
+        for member in members[:30]:
             ts_code = member.get('stock_code')
             stock_name = member.get('stock_name')
             if not ts_code:
@@ -1713,7 +1725,7 @@ def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple
                         "name": stock_name,
                         "pct_chg": 0
                     })
-            except:
+            except Exception:
                 stock_performance.append({
                     "code": ts_code,
                     "name": stock_name,
@@ -1725,7 +1737,8 @@ def save_leader_stocks_to_cache(user_id: str, access_token: str = None) -> Tuple
             leader = stock_performance[0]
             
             # 先删除该板块的旧记录
-            delete_url = f"{SUPABASE_URL}/rest/v1/user_leader_stocks_cache?user_id=eq.{user_id}&sector_name=eq.{sector_name}"
+            encoded = encode_supabase_eq(sector_name)
+            delete_url = f"{SUPABASE_URL}/rest/v1/user_leader_stocks_cache?user_id=eq.{user_id}&sector_name=eq.{encoded}"
             requests.delete(delete_url, headers=headers)
             
             data = {
@@ -1813,7 +1826,7 @@ def fetch_sector_stocks_from_tushare(sector_name: str) -> List[Dict]:
         st.write(f"📡 从东方财富获取板块 {sector_name} 信息...")
         
         # 获取最新交易日
-        today = datetime.now().strftime("%Y%m%d")
+        today = get_beijing_trade_date()
         trade_date = get_previous_trade_date(today)
         
         df_idx = TUSHARE_PRO.dc_index(trade_date=trade_date, idx_type='概念板块')
@@ -1910,7 +1923,8 @@ def save_sector_stocks_to_db(user_id: str, sector_name: str, stocks: List[Dict],
         url = f"{SUPABASE_URL}/rest/v1/user_sector_stocks"
         
         # 先删除旧数据
-        delete_url = f"{SUPABASE_URL}/rest/v1/user_sector_stocks?user_id=eq.{user_id}&sector_name=eq.{sector_name}"
+        encoded = encode_supabase_eq(sector_name)
+        delete_url = f"{SUPABASE_URL}/rest/v1/user_sector_stocks?user_id=eq.{user_id}&sector_name=eq.{encoded}"
         requests.delete(delete_url, headers=headers)
         
         if not stocks:
@@ -2209,7 +2223,11 @@ def admin_sign_out():
 
 def check_admin_login(username: str, password: str) -> bool:
     """验证管理员登录"""
-    return username == ADMIN_USERNAME and password == ADMIN_PASSWORD
+    if not ADMIN_PASSWORD:
+        return False
+    return hmac.compare_digest(str(username), str(ADMIN_USERNAME)) and hmac.compare_digest(
+        str(password), str(ADMIN_PASSWORD)
+    )
 
 
 # ==================== 用户资料操作 ====================
@@ -2805,7 +2823,8 @@ def create_checkout_session(user_id: str, user_email: str, price_id: str) -> Tup
         stripe.api_key = STRIPE_SECRET_KEY
         
         base_url = "https://stock-quant-strategy.streamlit.app"
-        success_url = f"{base_url}?payment_success=true"
+        # 必须带回 session_id，前端才能校验并升级订阅
+        success_url = f"{base_url}?session_id={{CHECKOUT_SESSION_ID}}"
         cancel_url = f"{base_url}?payment_canceled=true"
         
         session = stripe.checkout.Session.create(
@@ -2977,11 +2996,11 @@ def validate_stock_code(code: str) -> Tuple[bool, str]:
 def render_login_form():
     query_params = st.query_params
     
-    # 检查支付成功（支持 payment_success 和 session_id 两种参数）
-    if "payment_success" in query_params or "session_id" in query_params:
-        st.success("🎉 支付成功！您已升级为专业版用户")
-        st.info("📌 请重新登录")
-        # 清除参数，避免刷新后重复显示
+    # 支付回跳：必须校验 Stripe session，禁止仅凭 URL 参数假装升级成功
+    if "session_id" in query_params:
+        handle_stripe_callback()
+    elif "payment_success" in query_params:
+        st.info("检测到旧版支付回跳参数。请重新完成支付，或联系管理员核实订阅状态。")
         st.query_params.clear()
     
     #"""显示登录表单"""
@@ -3108,7 +3127,7 @@ def get_stock_daily(ts_code: str, days: int = 120) -> pd.DataFrame:
         return pd.DataFrame()  # 返回空 DataFrame，不是 None
     
     try:
-        end_date = datetime.now().strftime("%Y%m%d")
+        end_date = get_beijing_trade_date()
         start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
         
         # 判断是否为指数代码
@@ -5849,7 +5868,7 @@ def render_backtest():
             st.warning("免费次数已用完，请升级到专业版")
             return
         
-        end_date = datetime.now().strftime("%Y%m%d")
+        end_date = get_beijing_trade_date()
         start_date = (datetime.now() - timedelta(days=st.session_state.temp_backtest_params["backtest_days"])).strftime("%Y%m%d")
         
         with st.spinner("正在运行回测，请稍候..."):
@@ -6922,29 +6941,19 @@ def render_top_buttons():
 
 def render_main_app():
     """渲染主页面（5个模块）"""
-    # 处理支付回调（Webhook 简化版）
     query_params = st.query_params
     
-    # 支付成功回调
+    # 支付成功：用 Stripe session_id 校验后再升级（勿仅凭 payment_success）
+    if "session_id" in query_params:
+        handle_stripe_callback()
+        return
+    
     if "payment_success" in query_params:
-        st.success("🎉 支付成功！您已升级为专业版用户")
-        st.info("📌 请重新登录以激活专业版权限")
-        
-        # 清除登录状态
-        st.session_state.authenticated = False
-        st.session_state.user_id = None
-        st.session_state.user_email = None
-        st.session_state.access_token = None
-        st.session_state.refresh_token = None
-        
-        # 清除 URL 参数
+        st.warning("检测到旧版支付回跳。请重新发起支付，系统会通过 session_id 自动升级专业版。")
         st.query_params.clear()
-        
-        # 停止渲染，让用户看到消息后手动点击登录
-        st.stop()
     
     # 支付取消回调
-    if "payment_canceled" in query_params:
+    if "payment_canceled" in query_params or "canceled" in query_params:
         st.info("支付已取消")
         st.query_params.clear()
     
